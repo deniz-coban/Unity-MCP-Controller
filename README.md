@@ -49,3 +49,69 @@ Important:
 - Do not over-engineer
 - Do not add authentication, database, Docker, or deployment unless asked
 - Make sure the app can run locally with clear commands
+
+## Mock milestone
+
+This repository currently implements a local mock version only. It does not
+connect to Unity, MCP, or any real Unity Editor bridge yet.
+
+The mock backend tracks simple in-memory scene state while it is running:
+whether a scene has been created and the mock objects currently in that scene.
+Creating a scene resets that state.
+
+### Backend
+
+```bash
+cd backend
+npm install
+npm run dev
+```
+
+The backend listens on `127.0.0.1:3001` by default. To use another port:
+
+```bash
+PORT=4001 npm run dev
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:3001/api/health
+```
+
+### Frontend
+
+In a second terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open the Vite URL shown in the terminal, usually:
+
+```text
+http://127.0.0.1:5173
+```
+
+### Build checks
+
+```bash
+cd backend
+npm run build
+
+cd ../frontend
+npm run build
+```
+
+### Integration boundary
+
+All Unity-facing behavior is isolated in:
+
+```text
+backend/src/unityClient.ts
+```
+
+That file returns mock success responses today. Later, it can be replaced with
+real Unity MCP calls without changing the frontend or route names.
