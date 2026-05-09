@@ -2,7 +2,9 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import type {
   BackendMode,
+  CreateObjectPayload,
   ObjectTransformPayload,
+  UnityDefaultObjectType,
   UnityActionErrorResponse
 } from "./types";
 
@@ -27,6 +29,36 @@ const defaultScaleTransform = {
   x: "1",
   y: "1",
   z: "1"
+};
+
+const defaultCreateObjectValues = {
+  type: "cube" as UnityDefaultObjectType,
+  name: "Cube",
+  positionX: "0",
+  positionY: "0",
+  positionZ: "0",
+  scaleX: "1",
+  scaleY: "1",
+  scaleZ: "1"
+};
+
+const objectTypeOptions: Array<{ value: UnityDefaultObjectType; label: string }> = [
+  { value: "cube", label: "Cube" },
+  { value: "sphere", label: "Sphere" },
+  { value: "capsule", label: "Capsule" },
+  { value: "cylinder", label: "Cylinder" },
+  { value: "plane", label: "Plane" },
+  { value: "quad", label: "Quad" }
+];
+
+const getDefaultCreateObjectValues = (type: UnityDefaultObjectType) => {
+  const option = objectTypeOptions.find((item) => item.value === type);
+
+  return {
+    ...defaultCreateObjectValues,
+    type,
+    name: option?.label ?? "Object"
+  };
 };
 
 const formatError = (error: unknown): string[] => {
@@ -79,10 +111,60 @@ const parseTransform = (
   };
 };
 
+const parseCreateObject = (
+  values: typeof defaultCreateObjectValues
+): CreateObjectPayload | string => {
+  const name = values.name.trim();
+  const position = {
+    x: Number(values.positionX),
+    y: Number(values.positionY),
+    z: Number(values.positionZ)
+  };
+  const scale = {
+    x: Number(values.scaleX),
+    y: Number(values.scaleY),
+    z: Number(values.scaleZ)
+  };
+
+  if (!name) {
+    return "Object name is required.";
+  }
+
+  if (
+    !Number.isFinite(position.x) ||
+    !Number.isFinite(position.y) ||
+    !Number.isFinite(position.z)
+  ) {
+    return "Position values must be valid numbers.";
+  }
+
+  if (
+    !Number.isFinite(scale.x) ||
+    !Number.isFinite(scale.y) ||
+    !Number.isFinite(scale.z)
+  ) {
+    return "Scale values must be valid numbers.";
+  }
+
+  if (scale.x <= 0 || scale.y <= 0 || scale.z <= 0) {
+    return "Scale values must be greater than 0.";
+  }
+
+  return {
+    type: values.type,
+    name,
+    position,
+    scale
+  };
+};
+
 export default function App() {
   const [backendStatus, setBackendStatus] = useState<BackendStatus>("checking");
   const [backendMode, setBackendMode] = useState<BackendMode>("mock");
   const [isBusy, setIsBusy] = useState(false);
+  const [createObjectValues, setCreateObjectValues] = useState(
+    defaultCreateObjectValues
+  );
   const [moveValues, setMoveValues] = useState(defaultTransform);
   const [scaleValues, setScaleValues] = useState(defaultScaleTransform);
   const [logs, setLogs] = useState<LogEntry[]>([
@@ -109,7 +191,7 @@ export default function App() {
   const isMcpMode = backendMode === "mcp";
   const modeEyebrow = isMcpMode ? "UNITY MCP MODE" : "LOCAL MOCK MODE";
   const sceneActionSubtitle = isMcpMode
-    ? "Connected through Unity MCP. Currently only Add cube is enabled."
+    ? "Connected through Unity MCP. Default object creation is enabled."
     : "Mock responses only. No Unity or MCP connection is active.";
   const mcpOnlyDisabled = isBusy || isMcpMode;
 
@@ -191,6 +273,23 @@ export default function App() {
     );
   };
 
+  const submitCreateObject = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    const payload = parseCreateObject(createObjectValues);
+
+    if (typeof payload === "string") {
+      addLog({
+        tone: "error",
+        title: "Create object failed",
+        details: [payload]
+      });
+      return;
+    }
+
+    void runAction("Create object", () => api.createObject(payload));
+  };
+
   return (
     <main className="app-shell">
       <section className="top-bar">
@@ -239,6 +338,92 @@ export default function App() {
           </button>
         </div>
       </section>
+
+      <form className="panel" onSubmit={submitCreateObject}>
+        <div className="panel-heading">
+          <h2>Create default object</h2>
+          <p>Choose a Unity primitive, name it, and set its initial transform.</p>
+        </div>
+        <div className="field-stack">
+          <label>
+            Object type
+            <select
+              value={createObjectValues.type}
+              onChange={(event) =>
+                setCreateObjectValues(
+                  getDefaultCreateObjectValues(
+                    event.target.value as UnityDefaultObjectType
+                  )
+                )
+              }
+            >
+              {objectTypeOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Object name
+            <input
+              value={createObjectValues.name}
+              onChange={(event) =>
+                setCreateObjectValues((current) => ({
+                  ...current,
+                  name: event.target.value
+                }))
+              }
+              placeholder="MyObject"
+            />
+          </label>
+          <div className="coordinate-groups">
+            <fieldset>
+              <legend>Position</legend>
+              <div className="coordinate-row">
+                {(["X", "Y", "Z"] as const).map((axis) => (
+                  <label key={axis}>
+                    {axis}
+                    <input
+                      value={createObjectValues[`position${axis}`]}
+                      onChange={(event) =>
+                        setCreateObjectValues((current) => ({
+                          ...current,
+                          [`position${axis}`]: event.target.value
+                        }))
+                      }
+                      inputMode="decimal"
+                    />
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend>Scale</legend>
+              <div className="coordinate-row">
+                {(["X", "Y", "Z"] as const).map((axis) => (
+                  <label key={axis}>
+                    {axis}
+                    <input
+                      value={createObjectValues[`scale${axis}`]}
+                      onChange={(event) =>
+                        setCreateObjectValues((current) => ({
+                          ...current,
+                          [`scale${axis}`]: event.target.value
+                        }))
+                      }
+                      inputMode="decimal"
+                    />
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          </div>
+        </div>
+        <button disabled={isBusy} type="submit">
+          Create object
+        </button>
+      </form>
 
       <section className="forms-grid">
         <form className="panel" onSubmit={(event) => submitTransform(event, "move")}>

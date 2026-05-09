@@ -2,18 +2,53 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import {
   CallToolResultSchema,
-  ListToolsResultSchema
+  ListResourcesResultSchema,
+  ListToolsResultSchema,
+  ReadResourceResultSchema
 } from "@modelcontextprotocol/sdk/types.js";
 import { isMcpConfigured, unityConfig } from "./config.js";
 import type {
+  CreateObjectPayload,
+  UnityDefaultObjectType,
   UnityActionErrorResponse,
   UnityActionSuccessResponse
 } from "./types.js";
 
 interface ToolInputSchema {
-  properties?: Record<string, { type?: string }>;
+  properties?: Record<string, ToolInputSchemaProperty>;
   required?: string[];
 }
+
+interface ToolInputSchemaProperty {
+  type?: string;
+  properties?: Record<string, ToolInputSchemaProperty>;
+}
+
+interface HierarchyObject {
+  name?: unknown;
+  instanceId?: unknown;
+  children?: unknown;
+}
+
+interface HierarchyScene {
+  rootObjects?: unknown;
+}
+
+interface HierarchySnapshot {
+  instanceIds: Set<number>;
+  names: Set<string>;
+}
+
+const hierarchyResourceUri = "unity://scenes_hierarchy";
+
+const objectMenuPaths: Record<UnityDefaultObjectType, string> = {
+  cube: "GameObject/3D Object/Cube",
+  sphere: "GameObject/3D Object/Sphere",
+  capsule: "GameObject/3D Object/Capsule",
+  cylinder: "GameObject/3D Object/Cylinder",
+  plane: "GameObject/3D Object/Plane",
+  quad: "GameObject/3D Object/Quad"
+};
 
 const getErrorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -72,6 +107,11 @@ const extractTextContent = (result: unknown): string => {
     .join("\n");
 };
 
+const delay = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
 const connectionError = (error: unknown): UnityActionErrorResponse => ({
   ok: false,
   error: "Unity/MCP is not connected.",
@@ -93,7 +133,8 @@ const configurationError = (details: string[]): UnityActionErrorResponse => ({
 class McpUnityClient {
   private client: Client | undefined;
   private connectPromise: Promise<Client> | undefined;
-  private verifiedTool = false;
+  private verifiedAddCubeTool = false;
+  private verifiedCreateObjectTools = false;
 
   async addCube(): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
     if (!isMcpConfigured()) {
@@ -151,6 +192,92 @@ class McpUnityClient {
     }
   }
 
+  async createObject(
+    payload: CreateObjectPayload
+  ): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
+    if (!isMcpConfigured()) {
+      return configurationError([
+        "Set UNITY_MCP_SERVER_ARGS to the absolute path of mcp-unity/Server~/build/index.js.",
+        "UNITY_MCP_SERVER_COMMAND defaults to node."
+      ]);
+    }
+
+    try {
+      const client = await this.connect();
+      await this.verifyCreateObjectTools(client);
+
+      const beforeSnapshot = await this.readHierarchySnapshot(client);
+      const finalName = this.nextAvailableName(payload.name, beforeSnapshot.names);
+
+      await this.callTool(
+        client,
+        unityConfig.mcp.addCubeTool,
+        {
+          [unityConfig.mcp.addCubeArgumentName]: objectMenuPaths[payload.type]
+        },
+        `Creating Unity ${payload.type}`
+      );
+
+      const newInstanceId = await this.findNewObjectInstanceId(
+        client,
+        beforeSnapshot.instanceIds
+      );
+
+      if (newInstanceId === undefined) {
+        return {
+          ok: false,
+          error: "Could not safely identify the new Unity object.",
+          details: [
+            "The object was created, but the backend could not find exactly one new instanceId in the scene hierarchy.",
+            "No existing object was renamed or transformed."
+          ]
+        };
+      }
+
+      await this.callTool(
+        client,
+        "update_gameobject",
+        {
+          instanceId: newInstanceId,
+          gameObjectData: {
+            name: finalName
+          }
+        },
+        "Renaming Unity object"
+      );
+
+      await this.callTool(
+        client,
+        "set_transform",
+        {
+          instanceId: newInstanceId,
+          position: payload.position,
+          scale: payload.scale,
+          space: "world"
+        },
+        "Setting Unity object transform"
+      );
+
+      return {
+        ok: true,
+        mode: "mcp",
+        action: "createObject",
+        message: `Created ${payload.type} "${finalName}" in Unity.`,
+        data: {
+          instanceId: newInstanceId,
+          requestedName: payload.name,
+          object: {
+            ...payload,
+            name: finalName
+          }
+        }
+      };
+    } catch (error) {
+      await this.reset();
+      return connectionError(error);
+    }
+  }
+
   private async connect(): Promise<Client> {
     if (this.client) {
       return this.client;
@@ -184,7 +311,7 @@ class McpUnityClient {
   }
 
   private async verifyAddCubeTool(client: Client): Promise<void> {
-    if (this.verifiedTool) {
+    if (this.verifiedAddCubeTool) {
       return;
     }
 
@@ -193,36 +320,242 @@ class McpUnityClient {
       "Listing Unity MCP tools"
     );
 
-    const tool = toolsResult.tools.find(
-      (item) => item.name === unityConfig.mcp.addCubeTool
+    this.assertToolStringArgument(
+      toolsResult.tools,
+      unityConfig.mcp.addCubeTool,
+      unityConfig.mcp.addCubeArgumentName
     );
 
-    if (!tool) {
+    this.verifiedAddCubeTool = true;
+  }
+
+  private async verifyCreateObjectTools(client: Client): Promise<void> {
+    if (this.verifiedCreateObjectTools) {
+      return;
+    }
+
+    const [toolsResult, resourcesResult] = await Promise.all([
+      withTimeout(
+        client.request({ method: "tools/list" }, ListToolsResultSchema),
+        "Listing Unity MCP tools"
+      ),
+      withTimeout(
+        client.request({ method: "resources/list" }, ListResourcesResultSchema),
+        "Listing Unity MCP resources"
+      )
+    ]);
+
+    this.assertToolStringArgument(
+      toolsResult.tools,
+      unityConfig.mcp.addCubeTool,
+      unityConfig.mcp.addCubeArgumentName
+    );
+    this.assertToolObjectArgument(toolsResult.tools, "update_gameobject", "gameObjectData");
+    this.assertToolObjectArgument(toolsResult.tools, "set_transform", "position");
+    this.assertToolObjectArgument(toolsResult.tools, "set_transform", "scale");
+
+    if (!resourcesResult.resources.some((resource) => resource.uri === hierarchyResourceUri)) {
+      throw new Error(`MCP resource "${hierarchyResourceUri}" was not found.`);
+    }
+
+    this.verifiedCreateObjectTools = true;
+  }
+
+  private assertToolStringArgument(
+    tools: Array<{ name: string; inputSchema: unknown }>,
+    toolName: string,
+    argumentName: string
+  ): void {
+    const property = this.getToolProperty(tools, toolName, argumentName);
+
+    if (property.type && property.type !== "string") {
       throw new Error(
-        `MCP tool "${unityConfig.mcp.addCubeTool}" was not found.`
+        `MCP argument "${argumentName}" must be a string, but the "${toolName}" schema says "${property.type}".`
       );
+    }
+  }
+
+  private assertToolObjectArgument(
+    tools: Array<{ name: string; inputSchema: unknown }>,
+    toolName: string,
+    argumentName: string
+  ): void {
+    const property = this.getToolProperty(tools, toolName, argumentName);
+
+    if (property.type && property.type !== "object") {
+      throw new Error(
+        `MCP argument "${argumentName}" must be an object, but the "${toolName}" schema says "${property.type}".`
+      );
+    }
+  }
+
+  private getToolProperty(
+    tools: Array<{ name: string; inputSchema: unknown }>,
+    toolName: string,
+    argumentName: string
+  ): ToolInputSchemaProperty {
+    const tool = tools.find((item) => item.name === toolName);
+
+    if (!tool) {
+      throw new Error(`MCP tool "${toolName}" was not found.`);
     }
 
     const schema = tool.inputSchema as ToolInputSchema;
-    const argumentSchema = schema.properties?.[unityConfig.mcp.addCubeArgumentName];
+    const argumentSchema = schema.properties?.[argumentName];
 
     if (!argumentSchema) {
-      throw new Error(
-        `MCP tool "${unityConfig.mcp.addCubeTool}" does not accept "${unityConfig.mcp.addCubeArgumentName}".`
-      );
+      throw new Error(`MCP tool "${toolName}" does not accept "${argumentName}".`);
     }
 
-    if (argumentSchema.type && argumentSchema.type !== "string") {
-      throw new Error(
-        `MCP argument "${unityConfig.mcp.addCubeArgumentName}" must be a string, but the tool schema says "${argumentSchema.type}".`
-      );
+    return argumentSchema;
+  }
+
+  private async callTool(
+    client: Client,
+    name: string,
+    toolArguments: Record<string, unknown>,
+    label: string
+  ): Promise<string> {
+    const result = await withTimeout(
+      client.request(
+        {
+          method: "tools/call",
+          params: {
+            name,
+            arguments: toolArguments
+          }
+        },
+        CallToolResultSchema
+      ),
+      label
+    );
+
+    const resultText = extractTextContent(result);
+
+    if (result.isError) {
+      throw new Error(resultText || `${label} failed.`);
     }
 
-    this.verifiedTool = true;
+    return resultText;
+  }
+
+  private nextAvailableName(baseName: string, existingNames: Set<string>): string {
+    if (!existingNames.has(baseName)) {
+      return baseName;
+    }
+
+    let index = 2;
+    while (existingNames.has(`${baseName}_${index}`)) {
+      index += 1;
+    }
+
+    return `${baseName}_${index}`;
+  }
+
+  private async readHierarchySnapshot(client: Client): Promise<HierarchySnapshot> {
+    const result = await withTimeout(
+      client.request(
+        {
+          method: "resources/read",
+          params: {
+            uri: hierarchyResourceUri
+          }
+        },
+        ReadResourceResultSchema
+      ),
+      "Reading Unity scene hierarchy"
+    );
+
+    const text = result.contents
+      .map((content) => ("text" in content && typeof content.text === "string" ? content.text : ""))
+      .find(Boolean);
+
+    if (!text) {
+      throw new Error("Unity scene hierarchy response did not include JSON text.");
+    }
+
+    const hierarchy = JSON.parse(text) as unknown;
+    return this.extractHierarchySnapshot(hierarchy);
+  }
+
+  private extractHierarchySnapshot(hierarchy: unknown): HierarchySnapshot {
+    const instanceIds = new Set<number>();
+    const names = new Set<string>();
+
+    const visitObject = (object: HierarchyObject): void => {
+      if (typeof object.instanceId === "number") {
+        instanceIds.add(object.instanceId);
+      }
+
+      if (typeof object.name === "string") {
+        names.add(object.name);
+      }
+
+      if (Array.isArray(object.children)) {
+        for (const child of object.children) {
+          if (child && typeof child === "object") {
+            visitObject(child as HierarchyObject);
+          }
+        }
+      }
+    };
+
+    if (!Array.isArray(hierarchy)) {
+      throw new Error("Unity scene hierarchy JSON was not an array.");
+    }
+
+    for (const scene of hierarchy) {
+      if (!scene || typeof scene !== "object") {
+        continue;
+      }
+
+      const rootObjects = (scene as HierarchyScene).rootObjects;
+      if (!Array.isArray(rootObjects)) {
+        continue;
+      }
+
+      for (const rootObject of rootObjects) {
+        if (rootObject && typeof rootObject === "object") {
+          visitObject(rootObject as HierarchyObject);
+        }
+      }
+    }
+
+    return {
+      instanceIds,
+      names
+    };
+  }
+
+  private async findNewObjectInstanceId(
+    client: Client,
+    beforeIds: Set<number>
+  ): Promise<number | undefined> {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      if (attempt > 0) {
+        await delay(150);
+      }
+
+      const afterSnapshot = await this.readHierarchySnapshot(client);
+      const newIds = [...afterSnapshot.instanceIds].filter(
+        (id) => !beforeIds.has(id)
+      );
+
+      if (newIds.length === 1) {
+        return newIds[0];
+      }
+
+      if (newIds.length > 1) {
+        return undefined;
+      }
+    }
+
+    return undefined;
   }
 
   private async reset(): Promise<void> {
-    this.verifiedTool = false;
+    this.verifiedAddCubeTool = false;
+    this.verifiedCreateObjectTools = false;
     this.connectPromise = undefined;
 
     if (this.client) {

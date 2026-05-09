@@ -9,8 +9,24 @@ export interface ObjectTransformPayload {
   coordinates: Vector3;
 }
 
+export type UnityDefaultObjectType =
+  | "cube"
+  | "sphere"
+  | "capsule"
+  | "cylinder"
+  | "plane"
+  | "quad";
+
+export interface CreateObjectPayload {
+  type: UnityDefaultObjectType;
+  name: string;
+  position: Vector3;
+  scale: Vector3;
+}
+
 export type UnityAction =
   | "createScene"
+  | "createObject"
   | "addCube"
   | "addSphere"
   | "addLight"

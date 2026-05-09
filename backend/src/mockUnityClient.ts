@@ -2,6 +2,7 @@ import type {
   MockObject,
   MockObjectType,
   MockSceneState,
+  CreateObjectPayload,
   ObjectTransformPayload,
   UnityAction,
   UnityActionErrorResponse,
@@ -97,6 +98,37 @@ const addObject = (
   });
 };
 
+const createObject = (
+  payload: CreateObjectPayload,
+  action: UnityAction = "createObject"
+): UnityActionResponse => {
+  const sceneError = ensureScene();
+  if (sceneError) {
+    return sceneError;
+  }
+
+  const finalName = nextObjectName(payload.name);
+
+  const object: MockObject = {
+    name: finalName,
+    type: payload.type,
+    position: { ...payload.position },
+    scale: { ...payload.scale }
+  };
+
+  state.objects.push(object);
+
+  return mockSuccess(
+    action,
+    `Mock ${payload.type} created as ${finalName}.`,
+    {
+      object,
+      requestedName: payload.name,
+      state: cloneState()
+    }
+  );
+};
+
 export const mockUnityClient = {
   hasScene(): boolean {
     return state.sceneCreated;
@@ -112,7 +144,19 @@ export const mockUnityClient = {
   },
 
   addCube(): UnityActionResponse {
-    return addObject("addCube", "Cube", "cube");
+    return createObject(
+      {
+        type: "cube",
+        name: nextObjectName("Cube"),
+        position: { ...defaultPosition },
+        scale: { ...defaultScale }
+      },
+      "addCube"
+    );
+  },
+
+  createObject(payload: CreateObjectPayload): UnityActionResponse {
+    return createObject(payload);
   },
 
   addSphere(): UnityActionResponse {

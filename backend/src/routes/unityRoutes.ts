@@ -1,7 +1,10 @@
 import { Response, Router } from "express";
 import { unityClient } from "../unityClient.js";
 import type { UnityActionResponse } from "../types.js";
-import { validateTransformPayload } from "../validation.js";
+import {
+  validateCreateObjectPayload,
+  validateTransformPayload
+} from "../validation.js";
 
 export const unityRoutes = Router();
 
@@ -34,6 +37,25 @@ unityRoutes.post("/create-scene", async (_req, res) => {
 
 unityRoutes.post("/add-cube", async (_req, res) => {
   sendUnityResponse(res, await unityClient.addCube());
+});
+
+unityRoutes.post("/create-object", async (req, res) => {
+  if (!ensureSceneCreated(res)) {
+    return;
+  }
+
+  const result = validateCreateObjectPayload(req.body);
+
+  if (!result.ok) {
+    res.status(400).json({
+      ok: false,
+      error: "Invalid create object request.",
+      details: result.details
+    });
+    return;
+  }
+
+  sendUnityResponse(res, await unityClient.createObject(result.payload));
 });
 
 unityRoutes.post("/add-sphere", async (_req, res) => {

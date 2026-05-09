@@ -2,6 +2,7 @@ import { unityConfig } from "./config.js";
 import { mcpUnityClient } from "./mcpUnityClient.js";
 import { mockUnityClient } from "./mockUnityClient.js";
 import type {
+  CreateObjectPayload,
   ObjectTransformPayload,
   UnityAction,
   UnityActionErrorResponse,
@@ -27,6 +28,12 @@ export const unityClient = {
 
   addCube(): Promise<UnityActionResponse> | UnityActionResponse {
     return isMcpMode() ? mcpUnityClient.addCube() : mockUnityClient.addCube();
+  },
+
+  createObject(payload: CreateObjectPayload): Promise<UnityActionResponse> | UnityActionResponse {
+    return isMcpMode()
+      ? mcpUnityClient.createObject(payload)
+      : mockUnityClient.createObject(payload);
   },
 
   addSphere(): UnityActionResponse {

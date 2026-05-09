@@ -1,4 +1,5 @@
 import type {
+  CreateObjectPayload,
   HealthResponse,
   ObjectTransformPayload,
   UnityActionResponse
@@ -39,6 +40,13 @@ export const api = {
   addCube(): Promise<UnityActionResponse> {
     return requestJson<UnityActionResponse>("/api/unity/add-cube", {
       method: "POST"
+    });
+  },
+
+  createObject(payload: CreateObjectPayload): Promise<UnityActionResponse> {
+    return requestJson<UnityActionResponse>("/api/unity/create-object", {
+      method: "POST",
+      body: JSON.stringify(payload)
     });
   },
 

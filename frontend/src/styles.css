@@ -20,7 +20,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   border-radius: 0;
   font: inherit;
 }
@@ -45,7 +46,8 @@ button:disabled {
   opacity: 0.55;
 }
 
-input {
+input,
+select {
   width: 100%;
   border: 1px solid #3b4248;
   background: #111518;
@@ -54,7 +56,8 @@ input {
   padding: 8px 10px;
 }
 
-input:focus {
+input:focus,
+select:focus {
   border-color: #9fb7c9;
   outline: 2px solid rgba(159, 183, 201, 0.18);
 }
@@ -179,10 +182,29 @@ label {
   gap: 7px;
 }
 
+fieldset {
+  border: 1px solid #30383e;
+  margin: 0;
+  padding: 12px;
+}
+
+legend {
+  color: #c9d1d6;
+  font-size: 0.9rem;
+  font-weight: 800;
+  padding: 0 6px;
+}
+
 .coordinate-row {
   display: grid;
   gap: 10px;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.coordinate-groups {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 form button {
@@ -237,7 +259,8 @@ form button {
   }
 
   .top-bar,
-  .forms-grid {
+  .forms-grid,
+  .coordinate-groups {
     grid-template-columns: 1fr;
   }
 
