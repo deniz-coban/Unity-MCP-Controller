@@ -9,6 +9,13 @@ export interface ObjectTransformPayload {
   coordinates: Vector3;
 }
 
+export interface EditTransformPayload {
+  target: string;
+  position: Vector3;
+  rotation: Vector3;
+  scale: Vector3;
+}
+
 export type UnityDefaultObjectType =
   | "cube"
   | "sphere"
@@ -34,6 +41,7 @@ export type UnityAction =
   | "addLight"
   | "moveObject"
   | "scaleObject"
+  | "editTransform"
   | "saveScene";
 
 export type BackendMode = "mock" | "mcp";

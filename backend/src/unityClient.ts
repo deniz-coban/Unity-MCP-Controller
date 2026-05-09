@@ -3,6 +3,7 @@ import { mcpUnityClient } from "./mcpUnityClient.js";
 import { mockUnityClient } from "./mockUnityClient.js";
 import type {
   CreateObjectPayload,
+  EditTransformPayload,
   ImportModelPayload,
   ObjectTransformPayload,
   UnityAction,
@@ -61,7 +62,13 @@ export const unityClient = {
       : mockUnityClient.scaleObject(payload);
   },
 
-  saveScene(): UnityActionResponse {
-    return isMcpMode() ? mcpUnsupported("saveScene") : mockUnityClient.saveScene();
+  editTransform(payload: EditTransformPayload): Promise<UnityActionResponse> | UnityActionResponse {
+    return isMcpMode()
+      ? mcpUnityClient.editTransform(payload)
+      : mockUnityClient.editTransform(payload);
+  },
+
+  saveScene(): Promise<UnityActionResponse> | UnityActionResponse {
+    return isMcpMode() ? mcpUnityClient.saveScene() : mockUnityClient.saveScene();
   }
 };

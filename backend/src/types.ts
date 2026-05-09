@@ -11,6 +11,13 @@ export interface ObjectTransformPayload {
   coordinates: Vector3;
 }
 
+export interface EditTransformPayload {
+  target: string;
+  position: Vector3;
+  rotation: Vector3;
+  scale: Vector3;
+}
+
 export type UnityDefaultObjectType =
   | "cube"
   | "sphere"
@@ -25,9 +32,11 @@ export interface CreateObjectPayload {
   position: Vector3;
   rotation: Vector3;
   scale: Vector3;
+  texture?: UploadedTextureFile;
 }
 
 export type ModelFileExtension = ".fbx" | ".obj";
+export type TextureFileExtension = ".png" | ".jpg" | ".jpeg";
 
 export interface UploadedModelFile {
   originalName: string;
@@ -36,12 +45,26 @@ export interface UploadedModelFile {
   extension: ModelFileExtension;
 }
 
+export interface UploadedTextureFile {
+  originalName: string;
+  tempPath: string;
+  sizeBytes: number;
+  extension: TextureFileExtension;
+}
+
+export interface TextureMetadata {
+  originalName: string;
+  sizeBytes: number;
+  extension: TextureFileExtension;
+}
+
 export interface ImportModelPayload {
   name: string;
   position: Vector3;
   rotation: Vector3;
   scale: Vector3;
   file: UploadedModelFile;
+  texture?: UploadedTextureFile;
 }
 
 export type MockObjectType = UnityDefaultObjectType | "light" | "model";
@@ -52,6 +75,7 @@ export interface MockObject {
   position: Vector3;
   rotation: Vector3;
   scale: Vector3;
+  texture?: TextureMetadata;
 }
 
 export interface MockSceneState {
@@ -70,6 +94,7 @@ export type UnityAction =
   | "addLight"
   | "moveObject"
   | "scaleObject"
+  | "editTransform"
   | "saveScene";
 
 export interface UnityActionSuccessResponse {

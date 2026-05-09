@@ -1,5 +1,6 @@
 import type {
   CreateObjectPayload,
+  EditTransformPayload,
   HealthResponse,
   ObjectTransformPayload,
   UnityActionResponse
@@ -58,7 +59,11 @@ export const api = {
     });
   },
 
-  createObject(payload: CreateObjectPayload): Promise<UnityActionResponse> {
+  createObject(payload: CreateObjectPayload | FormData): Promise<UnityActionResponse> {
+    if (payload instanceof FormData) {
+      return requestForm<UnityActionResponse>("/api/unity/create-object", payload);
+    }
+
     return requestJson<UnityActionResponse>("/api/unity/create-object", {
       method: "POST",
       body: JSON.stringify(payload)
@@ -90,6 +95,13 @@ export const api = {
 
   scaleObject(payload: ObjectTransformPayload): Promise<UnityActionResponse> {
     return requestJson<UnityActionResponse>("/api/unity/scale-object", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+  },
+
+  editTransform(payload: EditTransformPayload): Promise<UnityActionResponse> {
+    return requestJson<UnityActionResponse>("/api/unity/edit-transform", {
       method: "POST",
       body: JSON.stringify(payload)
     });

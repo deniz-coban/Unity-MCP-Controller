@@ -1,12 +1,16 @@
 import type {
   CreateObjectPayload,
+  EditTransformPayload,
   ImportModelPayload,
   ModelFileExtension,
   ObjectTransformPayload,
+  TextureFileExtension,
+  UploadedTextureFile,
   UnityDefaultObjectType,
   Vector3
 } from "./types.js";
 import path from "node:path";
+import { unityConfig } from "./config.js";
 
 export const unityDefaultObjectTypes = [
   "cube",
@@ -21,6 +25,12 @@ export const supportedModelExtensions = [
   ".fbx",
   ".obj"
 ] as const satisfies readonly ModelFileExtension[];
+
+export const supportedTextureExtensions = [
+  ".png",
+  ".jpg",
+  ".jpeg"
+] as const satisfies readonly TextureFileExtension[];
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -160,9 +170,47 @@ export interface UploadedFileInput {
   size: number;
 }
 
+const validateOptionalTextureFile = (
+  file: UploadedFileInput | undefined,
+  details: string[]
+): UploadedTextureFile | undefined => {
+  if (!file) {
+    return undefined;
+  }
+
+  const originalName = path.basename(file.originalname);
+  const extension = path.extname(originalName).toLowerCase();
+  const maxBytes = unityConfig.textureUploadMaxMb * 1024 * 1024;
+
+  if (!supportedTextureExtensions.includes(extension as TextureFileExtension)) {
+    details.push("texture file extension must be .png, .jpg, or .jpeg.");
+  }
+
+  if (file.size > maxBytes) {
+    details.push(
+      `texture file maximum upload size is ${unityConfig.textureUploadMaxMb} MB.`
+    );
+  }
+
+  if (
+    !supportedTextureExtensions.includes(extension as TextureFileExtension) ||
+    file.size > maxBytes
+  ) {
+    return undefined;
+  }
+
+  return {
+    originalName,
+    tempPath: file.path,
+    sizeBytes: file.size,
+    extension: extension as TextureFileExtension
+  };
+};
+
 export const validateImportModelPayload = (
   body: unknown,
-  file: UploadedFileInput | undefined
+  file: UploadedFileInput | undefined,
+  textureFile?: UploadedFileInput
 ): { ok: true; payload: ImportModelPayload } | { ok: false; details: string[] } => {
   const details: string[] = [];
 
@@ -206,6 +254,7 @@ export const validateImportModelPayload = (
     { requirePositive: false, defaultValue: zeroVector() },
     details
   );
+  const texture = validateOptionalTextureFile(textureFile, details);
 
   if (
     details.length > 0 ||
@@ -230,7 +279,8 @@ export const validateImportModelPayload = (
         tempPath: file.path,
         sizeBytes: file.size,
         extension: extension as ModelFileExtension
-      }
+      },
+      ...(texture ? { texture } : {})
     }
   };
 };
@@ -297,6 +347,74 @@ export const validateCreateObjectPayload = (
   };
 };
 
+export const validateCreateObjectMultipartPayload = (
+  body: unknown,
+  textureFile?: UploadedFileInput
+): { ok: true; payload: CreateObjectPayload } | { ok: false; details: string[] } => {
+  const details: string[] = [];
+
+  if (!isRecord(body)) {
+    return { ok: false, details: ["Request body must include object metadata."] };
+  }
+
+  const type = typeof body.type === "string" ? body.type.toLowerCase() : body.type;
+
+  if (!isUnityDefaultObjectType(type)) {
+    details.push(
+      `type must be one of: ${unityDefaultObjectTypes.join(", ")}.`
+    );
+  }
+
+  if (typeof body.name !== "string" || body.name.trim().length === 0) {
+    details.push("name is required.");
+  }
+
+  const position = validateVector3Fields(
+    body,
+    "position",
+    "position",
+    { requirePositive: false },
+    details
+  );
+  const rotation = validateVector3Fields(
+    body,
+    "rotation",
+    "rotation",
+    { requirePositive: false, defaultValue: zeroVector() },
+    details
+  );
+  const scale = validateVector3Fields(
+    body,
+    "scale",
+    "scale",
+    { requirePositive: true },
+    details
+  );
+  const texture = validateOptionalTextureFile(textureFile, details);
+
+  if (
+    details.length > 0 ||
+    !position ||
+    !rotation ||
+    !scale ||
+    !isUnityDefaultObjectType(type)
+  ) {
+    return { ok: false, details };
+  }
+
+  return {
+    ok: true,
+    payload: {
+      type,
+      name: (body.name as string).trim(),
+      position,
+      rotation,
+      scale,
+      ...(texture ? { texture } : {})
+    }
+  };
+};
+
 export const validateTransformPayload = (
   body: unknown,
   options: { requirePositiveCoordinates?: boolean } = {}
@@ -338,6 +456,53 @@ export const validateTransformPayload = (
         y: coordinates.y,
         z: coordinates.z
       }
+    }
+  };
+};
+
+export const validateEditTransformPayload = (
+  body: unknown
+): { ok: true; payload: EditTransformPayload } | { ok: false; details: string[] } => {
+  const details: string[] = [];
+
+  if (!isRecord(body)) {
+    return { ok: false, details: ["Request body must be a JSON object."] };
+  }
+
+  if (typeof body.target !== "string" || body.target.trim().length === 0) {
+    details.push("target is required.");
+  }
+
+  const position = validateVector3(
+    body.position,
+    "position",
+    { requirePositive: false },
+    details
+  );
+  const rotation = validateVector3(
+    body.rotation,
+    "rotation",
+    { requirePositive: false },
+    details
+  );
+  const scale = validateVector3(
+    body.scale,
+    "scale",
+    { requirePositive: true },
+    details
+  );
+
+  if (details.length > 0 || !position || !rotation || !scale) {
+    return { ok: false, details };
+  }
+
+  return {
+    ok: true,
+    payload: {
+      target: (body.target as string).trim(),
+      position,
+      rotation,
+      scale
     }
   };
 };

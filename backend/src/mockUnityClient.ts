@@ -3,8 +3,10 @@ import type {
   MockObjectType,
   MockSceneState,
   CreateObjectPayload,
+  EditTransformPayload,
   ImportModelPayload,
   ObjectTransformPayload,
+  TextureMetadata,
   UnityAction,
   UnityActionErrorResponse,
   UnityActionResponse,
@@ -48,7 +50,8 @@ const cloneState = (): MockSceneState => ({
     ...object,
     position: { ...object.position },
     rotation: { ...object.rotation },
-    scale: { ...object.scale }
+    scale: { ...object.scale },
+    ...(object.texture ? { texture: { ...object.texture } } : {})
   }))
 });
 
@@ -75,6 +78,17 @@ const nextObjectName = (baseName: string): string => {
 
   return `${baseName}_${index}`;
 };
+
+const textureMetadata = (
+  texture: CreateObjectPayload["texture"] | ImportModelPayload["texture"]
+): TextureMetadata | undefined =>
+  texture
+    ? {
+        originalName: texture.originalName,
+        extension: texture.extension,
+        sizeBytes: texture.sizeBytes
+      }
+    : undefined;
 
 const addObject = (
   action: UnityAction,
@@ -118,14 +132,17 @@ const createObject = (
     type: payload.type,
     position: { ...payload.position },
     rotation: { ...payload.rotation },
-    scale: { ...payload.scale }
+    scale: { ...payload.scale },
+    ...(payload.texture ? { texture: textureMetadata(payload.texture) } : {})
   };
 
   state.objects.push(object);
 
   return mockSuccess(
     action,
-    `Mock ${payload.type} created as ${finalName}.`,
+    payload.texture
+      ? `Mock ${payload.type} created as ${finalName} with texture ${payload.texture.originalName}.`
+      : `Mock ${payload.type} created as ${finalName}.`,
     {
       object,
       requestedName: payload.name,
@@ -177,12 +194,18 @@ export const mockUnityClient = {
       type: "model",
       position: { ...payload.position },
       rotation: { ...payload.rotation },
-      scale: { ...payload.scale }
+      scale: { ...payload.scale },
+      ...(payload.texture ? { texture: textureMetadata(payload.texture) } : {})
     };
 
     state.objects.push(object);
 
-    return mockSuccess("importModel", `Mock model imported as ${finalName}.`, {
+    return mockSuccess(
+      "importModel",
+      payload.texture
+        ? `Mock model imported as ${finalName} with texture ${payload.texture.originalName}.`
+        : `Mock model imported as ${finalName}.`,
+      {
       object,
       requestedName: payload.name,
       file: {
@@ -190,8 +213,18 @@ export const mockUnityClient = {
         extension: payload.file.extension,
         sizeBytes: payload.file.sizeBytes
       },
+      ...(payload.texture
+        ? {
+            texture: {
+              originalName: payload.texture.originalName,
+              extension: payload.texture.extension,
+              sizeBytes: payload.texture.sizeBytes
+            }
+          }
+        : {}),
       state: cloneState()
-    });
+      }
+    );
   },
 
   addSphere(): UnityActionResponse {
@@ -245,6 +278,41 @@ export const mockUnityClient = {
     return mockSuccess(
       "scaleObject",
       `Mock scaled ${payload.objectName} to (${payload.coordinates.x}, ${payload.coordinates.y}, ${payload.coordinates.z}).`,
+      {
+        object,
+        state: cloneState()
+      }
+    );
+  },
+
+  editTransform(payload: EditTransformPayload): UnityActionResponse {
+    const sceneError = ensureScene();
+    if (sceneError) {
+      return sceneError;
+    }
+
+    const matches = state.objects.filter((object) => object.name === payload.target);
+
+    if (matches.length === 0) {
+      return mockError("Invalid edit transform request.", [
+        `Object "${payload.target}" does not exist in the mock scene.`
+      ]);
+    }
+
+    if (matches.length > 1) {
+      return mockError("Ambiguous mock object target.", [
+        `Multiple mock objects are named "${payload.target}". Use a unique object name.`
+      ]);
+    }
+
+    const object = matches[0];
+    object.position = { ...payload.position };
+    object.rotation = { ...payload.rotation };
+    object.scale = { ...payload.scale };
+
+    return mockSuccess(
+      "editTransform",
+      `Mock transform updated for ${object.name}.`,
       {
         object,
         state: cloneState()

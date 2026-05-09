@@ -236,6 +236,23 @@ Do not use `.glb`, `.gltf`, `.blend`, `.zip`, texture folders, material folders,
 or animated model workflows yet. OBJ material and texture sidecars are not fully
 supported in this first version, so test with small FBX files first.
 
+Simple texture upload is supported for newly created primitives and newly
+imported models. The first supported texture formats are:
+
+```text
+.png
+.jpg
+.jpeg
+```
+
+Texture support is intentionally narrow for now:
+
+- one optional texture image per created object/model
+- one generated Unity material per created object/model
+- material assignment uses slot `0` only
+- no OBJ `.mtl` parsing yet
+- no texture folders, material packs, or zip files yet
+
 Set the Unity project path when running the backend in MCP mode:
 
 ```bash
@@ -248,8 +265,21 @@ The backend copies uploaded model files into:
 <UNITY_PROJECT_PATH>/Assets/ImportedModels
 ```
 
-The folder is created automatically if it does not exist. Uploads are limited by
-`MODEL_UPLOAD_MAX_MB`, which defaults to `50`.
+Uploaded texture files are copied into:
+
+```text
+<UNITY_PROJECT_PATH>/Assets/ImportedTextures
+```
+
+Generated Unity materials are saved into:
+
+```text
+<UNITY_PROJECT_PATH>/Assets/GeneratedMaterials
+```
+
+These folders are created automatically if they do not exist. Model uploads are
+limited by `MODEL_UPLOAD_MAX_MB`, which defaults to `50`. Texture uploads are
+limited by `TEXTURE_UPLOAD_MAX_MB`, which defaults to `20`.
 
 Example MCP backend command with model import enabled:
 
@@ -260,6 +290,7 @@ UNITY_MCP_SERVER_COMMAND=node \
 UNITY_MCP_SERVER_ARGS="$HOME/Developer/mcp-unity/Server~/build/index.js" \
 UNITY_PROJECT_PATH=/Users/deniz/Desktop/UnityMCPDemo \
 MODEL_UPLOAD_MAX_MB=50 \
+TEXTURE_UPLOAD_MAX_MB=20 \
 UNITY_PORT=8090 \
 npm run dev
 ```

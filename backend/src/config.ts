@@ -44,6 +44,7 @@ export const unityConfig = {
   port: parsePositiveInteger(process.env.PORT, 3001),
   unityProjectPath: process.env.UNITY_PROJECT_PATH?.trim() || undefined,
   modelUploadMaxMb: parsePositiveNumber(process.env.MODEL_UPLOAD_MAX_MB, 50),
+  textureUploadMaxMb: parsePositiveNumber(process.env.TEXTURE_UPLOAD_MAX_MB, 20),
   mcp: {
     serverCommand: process.env.UNITY_MCP_SERVER_COMMAND ?? "node",
     serverArgs: parseArgs(process.env.UNITY_MCP_SERVER_ARGS),

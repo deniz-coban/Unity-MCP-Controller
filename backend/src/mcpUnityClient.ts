@@ -11,7 +11,9 @@ import {
 import { isMcpConfigured, unityConfig } from "./config.js";
 import type {
   CreateObjectPayload,
+  EditTransformPayload,
   ImportModelPayload,
+  UploadedTextureFile,
   UnityDefaultObjectType,
   UnityActionErrorResponse,
   UnityActionSuccessResponse
@@ -43,6 +45,13 @@ interface HierarchySnapshot {
   names: Set<string>;
 }
 
+interface FlattenedHierarchyObject {
+  name: string;
+  instanceId: number;
+  path: string;
+  scenePath?: string;
+}
+
 interface UnityAssetInfo {
   name?: string;
   filename?: string;
@@ -53,7 +62,7 @@ interface UnityAssetInfo {
   size?: number;
 }
 
-interface CopiedModelFile {
+interface CopiedProjectFile {
   absolutePath: string;
   assetPath: string;
   fileName: string;
@@ -63,11 +72,32 @@ interface UnityProjectPaths {
   projectPath: string;
   assetsDir: string;
   importedModelsDir: string;
+  importedTexturesDir: string;
+  generatedMaterialsDir: string;
 }
 
 interface ToolCallResponse {
   text: string;
   raw: unknown;
+}
+
+interface MaterialPropertyInfo {
+  name: string;
+  type: string;
+}
+
+interface PreparedTextureMaterial {
+  textureAsset: UnityAssetInfo;
+  texturePath: string;
+  materialName: string;
+  materialPath: string;
+  textureProperty: string;
+}
+
+interface MaterialAssignmentResult {
+  assignedCount: number;
+  totalRenderers: number;
+  failures: string[];
 }
 
 const hierarchyResourceUri = "unity://scenes_hierarchy";
@@ -167,6 +197,9 @@ class McpUnityClient {
   private verifiedAddCubeTool = false;
   private verifiedCreateObjectTools = false;
   private verifiedImportModelTools = false;
+  private verifiedMaterialTools = false;
+  private verifiedEditTransformTools = false;
+  private verifiedSaveSceneTool = false;
   private canRefreshAssets = false;
 
   async addCube(): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
@@ -241,6 +274,29 @@ class McpUnityClient {
 
       const beforeSnapshot = await this.readHierarchySnapshot(client);
       const finalName = this.nextAvailableName(payload.name, beforeSnapshot.names);
+      let preparedTextureMaterial: PreparedTextureMaterial | undefined;
+
+      if (payload.texture) {
+        await this.verifyMaterialTools(client);
+
+        const projectPaths = await this.getUnityProjectPaths();
+        if (!projectPaths.ok) {
+          return projectPaths.error;
+        }
+
+        const materialResult = await this.prepareTextureMaterial(
+          client,
+          payload.texture,
+          finalName,
+          projectPaths.paths
+        );
+
+        if (!materialResult.ok) {
+          return materialResult.error;
+        }
+
+        preparedTextureMaterial = materialResult.material;
+      }
 
       await this.callTool(
         client,
@@ -292,18 +348,43 @@ class McpUnityClient {
         "Setting Unity object position, rotation, and scale"
       );
 
+      if (preparedTextureMaterial) {
+        const assignmentResult = await this.assignMaterialToRenderer(
+          client,
+          newInstanceId,
+          preparedTextureMaterial.materialPath
+        );
+
+        if (!assignmentResult.ok) {
+          return assignmentResult.error;
+        }
+      }
+
       return {
         ok: true,
         mode: "mcp",
         action: "createObject",
-        message: `Created ${payload.type} "${finalName}" in Unity.`,
+        message: preparedTextureMaterial
+          ? `Created ${payload.type} "${finalName}" in Unity with texture ${preparedTextureMaterial.textureAsset.filename ?? preparedTextureMaterial.textureAsset.name ?? "texture"}.`
+          : `Created ${payload.type} "${finalName}" in Unity.`,
         data: {
           instanceId: newInstanceId,
           requestedName: payload.name,
           object: {
             ...payload,
             name: finalName
-          }
+          },
+          ...(preparedTextureMaterial
+            ? {
+                material: {
+                  name: preparedTextureMaterial.materialName,
+                  path: preparedTextureMaterial.materialPath,
+                  texturePath: preparedTextureMaterial.texturePath,
+                  textureProperty: preparedTextureMaterial.textureProperty,
+                  assignedRenderers: 1
+                }
+              }
+            : {})
         }
       };
     } catch (error) {
@@ -339,6 +420,9 @@ class McpUnityClient {
     try {
       const client = await this.connect();
       await this.verifyImportModelTools(client);
+      if (payload.texture) {
+        await this.verifyMaterialTools(client);
+      }
 
       const copiedFile = await this.copyModelIntoUnityProject(
         payload,
@@ -366,6 +450,22 @@ class McpUnityClient {
 
       const beforeSnapshot = await this.readHierarchySnapshot(client);
       const finalName = this.nextAvailableName(payload.name, beforeSnapshot.names);
+      let preparedTextureMaterial: PreparedTextureMaterial | undefined;
+
+      if (payload.texture) {
+        const materialResult = await this.prepareTextureMaterial(
+          client,
+          payload.texture,
+          finalName,
+          projectPaths.paths
+        );
+
+        if (!materialResult.ok) {
+          return materialResult.error;
+        }
+
+        preparedTextureMaterial = materialResult.material;
+      }
 
       const addAssetResult = await this.callTool(
         client,
@@ -425,11 +525,34 @@ class McpUnityClient {
         "Setting imported model position, rotation, and scale"
       );
 
+      let materialAssignment: MaterialAssignmentResult | undefined;
+      if (preparedTextureMaterial) {
+        const assignmentResult = await this.assignMaterialToModelRenderers(
+          client,
+          instanceId,
+          preparedTextureMaterial.materialPath
+        );
+
+        if (!assignmentResult.ok) {
+          return assignmentResult.error;
+        }
+
+        materialAssignment = assignmentResult.assignment;
+      }
+
+      const materialAssignmentMessage = materialAssignment
+        ? ` Texture material assigned to ${materialAssignment.assignedCount} of ${materialAssignment.totalRenderers} renderers${
+            materialAssignment.failures.length > 0 ? " with some failures" : ""
+          }.`
+        : "";
+
       return {
         ok: true,
         mode: "mcp",
         action: "importModel",
-        message: `Imported model "${finalName}" into Unity.`,
+        message: preparedTextureMaterial
+          ? `Imported model "${finalName}" into Unity with texture ${preparedTextureMaterial.textureAsset.filename ?? preparedTextureMaterial.textureAsset.name ?? "texture"}.${materialAssignmentMessage}`
+          : `Imported model "${finalName}" into Unity.`,
         data: {
           instanceId,
           requestedName: payload.name,
@@ -439,6 +562,19 @@ class McpUnityClient {
             rotation: payload.rotation,
             scale: payload.scale
           },
+          ...(preparedTextureMaterial
+            ? {
+                material: {
+                  name: preparedTextureMaterial.materialName,
+                  path: preparedTextureMaterial.materialPath,
+                  texturePath: preparedTextureMaterial.texturePath,
+                  textureProperty: preparedTextureMaterial.textureProperty,
+                  assignedRenderers: materialAssignment?.assignedCount ?? 0,
+                  totalRenderers: materialAssignment?.totalRenderers ?? 0,
+                  failures: materialAssignment?.failures ?? []
+                }
+              }
+            : {}),
           asset: {
             path: importedAsset.path,
             guid: importedAsset.guid,
@@ -454,6 +590,112 @@ class McpUnityClient {
         details: [
           "Open the UnityMCPDemo project in Unity Editor.",
           "Open Tools > MCP Unity > Server Window and click Start Server.",
+          `Original error: ${getErrorMessage(error)}`
+        ]
+      };
+    }
+  }
+
+  async editTransform(
+    payload: EditTransformPayload
+  ): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
+    if (!isMcpConfigured()) {
+      return configurationError([
+        "Set UNITY_MCP_SERVER_ARGS to the absolute path of mcp-unity/Server~/build/index.js.",
+        "UNITY_MCP_SERVER_COMMAND defaults to node."
+      ]);
+    }
+
+    try {
+      const client = await this.connect();
+      await this.verifyEditTransformTools(client);
+
+      const objects = await this.readHierarchyObjects(client);
+      const resolved = this.resolveHierarchyTarget(payload.target, objects);
+
+      if (!resolved.ok) {
+        return resolved.error;
+      }
+
+      await this.callTool(
+        client,
+        "set_transform",
+        {
+          instanceId: resolved.object.instanceId,
+          position: payload.position,
+          rotation: payload.rotation,
+          scale: payload.scale,
+          space: "world"
+        },
+        "Setting Unity object position, rotation, and scale"
+      );
+
+      return {
+        ok: true,
+        mode: "mcp",
+        action: "editTransform",
+        message: `Updated transform for "${resolved.object.path}" in Unity.`,
+        data: {
+          target: payload.target,
+          matchedObject: resolved.object,
+          transform: {
+            position: payload.position,
+            rotation: payload.rotation,
+            scale: payload.scale
+          }
+        }
+      };
+    } catch (error) {
+      await this.reset();
+      return {
+        ok: false,
+        error: "Unity/MCP edit transform failed.",
+        details: [
+          "Open the UnityMCPDemo project in Unity Editor.",
+          "Open Tools > MCP Unity > Server Window and click Start Server.",
+          "The backend reads the Unity hierarchy first and only transforms a uniquely matched object.",
+          `Original error: ${getErrorMessage(error)}`
+        ]
+      };
+    }
+  }
+
+  async saveScene(): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
+    if (!isMcpConfigured()) {
+      return configurationError([
+        "Set UNITY_MCP_SERVER_ARGS to the absolute path of mcp-unity/Server~/build/index.js.",
+        "UNITY_MCP_SERVER_COMMAND defaults to node."
+      ]);
+    }
+
+    try {
+      const client = await this.connect();
+      await this.verifySaveSceneTool(client);
+
+      const result = await this.callTool(
+        client,
+        "save_scene",
+        {},
+        "Saving Unity scene"
+      );
+
+      return {
+        ok: true,
+        mode: "mcp",
+        action: "saveScene",
+        message: result.text || "Unity scene saved successfully.",
+        data: {
+          tool: "save_scene"
+        }
+      };
+    } catch (error) {
+      await this.reset();
+      return {
+        ok: false,
+        error: "Unity/MCP save scene failed.",
+        details: [
+          "The current scene may need to already have a scene path before it can be saved.",
+          "Save As is not implemented in this app yet.",
           `Original error: ${getErrorMessage(error)}`
         ]
       };
@@ -536,6 +778,11 @@ class McpUnityClient {
     this.assertToolObjectArgument(toolsResult.tools, "set_transform", "position");
     this.assertToolObjectArgument(toolsResult.tools, "set_transform", "rotation");
     this.assertToolObjectArgument(toolsResult.tools, "set_transform", "scale");
+    this.canRefreshAssets = this.hasToolStringArgument(
+      toolsResult.tools,
+      unityConfig.mcp.addCubeTool,
+      unityConfig.mcp.addCubeArgumentName
+    );
 
     if (!resourcesResult.resources.some((resource) => resource.uri === hierarchyResourceUri)) {
       throw new Error(`MCP resource "${hierarchyResourceUri}" was not found.`);
@@ -579,6 +826,87 @@ class McpUnityClient {
     }
 
     this.verifiedImportModelTools = true;
+  }
+
+  private async verifyMaterialTools(client: Client): Promise<void> {
+    if (this.verifiedMaterialTools) {
+      return;
+    }
+
+    const [toolsResult, resourcesResult] = await Promise.all([
+      withTimeout(
+        client.request({ method: "tools/list" }, ListToolsResultSchema),
+        "Listing Unity MCP tools"
+      ),
+      withTimeout(
+        client.request({ method: "resources/list" }, ListResourcesResultSchema),
+        "Listing Unity MCP resources"
+      )
+    ]);
+
+    this.assertToolStringArgument(toolsResult.tools, "create_material", "name");
+    this.assertToolStringArgument(toolsResult.tools, "create_material", "savePath");
+    this.assertToolStringArgument(toolsResult.tools, "get_material_info", "materialPath");
+    this.assertToolStringArgument(toolsResult.tools, "modify_material", "materialPath");
+    this.assertToolObjectArgument(toolsResult.tools, "modify_material", "properties");
+    this.assertToolStringArgument(toolsResult.tools, "assign_material", "materialPath");
+    this.assertToolStringArgument(toolsResult.tools, "get_gameobject", "idOrName");
+
+    if (!resourcesResult.resources.some((resource) => resource.uri === "unity://assets")) {
+      throw new Error('MCP resource "unity://assets" was not found.');
+    }
+
+    this.verifiedMaterialTools = true;
+  }
+
+  private async verifyEditTransformTools(client: Client): Promise<void> {
+    if (this.verifiedEditTransformTools) {
+      return;
+    }
+
+    const [toolsResult, resourcesResult] = await Promise.all([
+      withTimeout(
+        client.request({ method: "tools/list" }, ListToolsResultSchema),
+        "Listing Unity MCP tools"
+      ),
+      withTimeout(
+        client.request({ method: "resources/list" }, ListResourcesResultSchema),
+        "Listing Unity MCP resources"
+      )
+    ]);
+
+    this.assertToolObjectArgument(toolsResult.tools, "set_transform", "position");
+    this.assertToolObjectArgument(toolsResult.tools, "set_transform", "rotation");
+    this.assertToolObjectArgument(toolsResult.tools, "set_transform", "scale");
+
+    if (!resourcesResult.resources.some((resource) => resource.uri === hierarchyResourceUri)) {
+      throw new Error(`MCP resource "${hierarchyResourceUri}" was not found.`);
+    }
+
+    this.verifiedEditTransformTools = true;
+  }
+
+  private async verifySaveSceneTool(client: Client): Promise<void> {
+    if (this.verifiedSaveSceneTool) {
+      return;
+    }
+
+    const toolsResult = await withTimeout(
+      client.request({ method: "tools/list" }, ListToolsResultSchema),
+      "Listing Unity MCP tools"
+    );
+
+    this.assertToolExists(toolsResult.tools, "save_scene");
+    this.verifiedSaveSceneTool = true;
+  }
+
+  private assertToolExists(
+    tools: Array<{ name: string; inputSchema: unknown }>,
+    toolName: string
+  ): void {
+    if (!tools.some((tool) => tool.name === toolName)) {
+      throw new Error(`MCP tool "${toolName}" was not found.`);
+    }
   }
 
   private assertToolStringArgument(
@@ -691,6 +1019,8 @@ class McpUnityClient {
     const projectPath = path.resolve(unityConfig.unityProjectPath);
     const assetsDir = path.join(projectPath, "Assets");
     const importedModelsDir = path.join(assetsDir, "ImportedModels");
+    const importedTexturesDir = path.join(assetsDir, "ImportedTextures");
+    const generatedMaterialsDir = path.join(assetsDir, "GeneratedMaterials");
 
     try {
       const [projectStat, assetsStat] = await Promise.all([
@@ -717,7 +1047,9 @@ class McpUnityClient {
       paths: {
         projectPath,
         assetsDir,
-        importedModelsDir
+        importedModelsDir,
+        importedTexturesDir,
+        generatedMaterialsDir
       }
     };
   }
@@ -735,7 +1067,7 @@ class McpUnityClient {
   private async copyModelIntoUnityProject(
     payload: ImportModelPayload,
     importedModelsDir: string
-  ): Promise<CopiedModelFile> {
+  ): Promise<CopiedProjectFile> {
     await fs.mkdir(importedModelsDir, { recursive: true });
 
     const safeBaseName = this.sanitizeFileBaseName(payload.file.originalName);
@@ -757,6 +1089,171 @@ class McpUnityClient {
       absolutePath,
       fileName: destinationFileName,
       assetPath: `Assets/ImportedModels/${destinationFileName}`
+    };
+  }
+
+  private async copyTextureIntoUnityProject(
+    texture: UploadedTextureFile,
+    importedTexturesDir: string
+  ): Promise<CopiedProjectFile> {
+    await fs.mkdir(importedTexturesDir, { recursive: true });
+
+    const safeBaseName = this.sanitizeFileBaseName(texture.originalName);
+    const destinationFileName = await this.nextAvailableFileName(
+      importedTexturesDir,
+      safeBaseName,
+      texture.extension
+    );
+    const importedTexturesRoot = path.resolve(importedTexturesDir);
+    const absolutePath = path.resolve(importedTexturesRoot, destinationFileName);
+
+    if (!absolutePath.startsWith(`${importedTexturesRoot}${path.sep}`)) {
+      throw new Error("Refusing to copy texture outside Assets/ImportedTextures.");
+    }
+
+    await fs.copyFile(texture.tempPath, absolutePath);
+
+    return {
+      absolutePath,
+      fileName: destinationFileName,
+      assetPath: `Assets/ImportedTextures/${destinationFileName}`
+    };
+  }
+
+  private async prepareTextureMaterial(
+    client: Client,
+    texture: UploadedTextureFile,
+    finalObjectName: string,
+    projectPaths: UnityProjectPaths
+  ): Promise<
+    | { ok: true; material: PreparedTextureMaterial }
+    | { ok: false; error: UnityActionErrorResponse }
+  > {
+    try {
+      await Promise.all([
+        fs.mkdir(projectPaths.importedTexturesDir, { recursive: true }),
+        fs.mkdir(projectPaths.generatedMaterialsDir, { recursive: true })
+      ]);
+
+      const copiedTexture = await this.copyTextureIntoUnityProject(
+        texture,
+        projectPaths.importedTexturesDir
+      );
+
+      await this.refreshAssetsIfAvailable(client);
+
+      const textureAsset = await this.waitForImportedAsset(
+        client,
+        copiedTexture.assetPath
+      );
+
+      if (!textureAsset) {
+        return {
+          ok: false,
+          error: {
+            ok: false,
+            error: "Unity texture import timed out.",
+            details: [
+              `Texture file was copied to ${copiedTexture.absolutePath}.`,
+              "Unity did not finish importing it into the AssetDatabase before the timeout.",
+              "Check Unity's Console and Project window, then try again."
+            ]
+          }
+        };
+      }
+
+      const materialAsset = await this.nextGeneratedMaterialAsset(
+        projectPaths.generatedMaterialsDir,
+        finalObjectName
+      );
+
+      await this.callTool(
+        client,
+        "create_material",
+        {
+          name: materialAsset.name,
+          savePath: materialAsset.path
+        },
+        "Creating Unity texture material"
+      );
+
+      const info = await this.callTool(
+        client,
+        "get_material_info",
+        {
+          materialPath: materialAsset.path
+        },
+        "Reading generated material info"
+      );
+      const textureProperty = this.chooseTextureProperty(info.raw, info.text);
+
+      if (!textureProperty) {
+        return {
+          ok: false,
+          error: {
+            ok: false,
+            error: "No usable texture property found on the generated material.",
+            details: [
+              `Material path: ${materialAsset.path}`,
+              "Expected one of _BaseMap, _MainTex, _BaseColorMap, or another TexEnv property."
+            ]
+          }
+        };
+      }
+
+      await this.callTool(
+        client,
+        "modify_material",
+        {
+          materialPath: materialAsset.path,
+          properties: {
+            [textureProperty]: textureAsset.path
+          }
+        },
+        "Assigning texture to generated material"
+      );
+
+      return {
+        ok: true,
+        material: {
+          textureAsset,
+          texturePath: textureAsset.path,
+          materialName: materialAsset.name,
+          materialPath: materialAsset.path,
+          textureProperty
+        }
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: {
+          ok: false,
+          error: "Unity/MCP texture material setup failed.",
+          details: [
+            "The texture could not be imported or connected to a generated material.",
+            `Original error: ${getErrorMessage(error)}`
+          ]
+        }
+      };
+    }
+  }
+
+  private async nextGeneratedMaterialAsset(
+    generatedMaterialsDir: string,
+    objectName: string
+  ): Promise<{ name: string; path: string }> {
+    await fs.mkdir(generatedMaterialsDir, { recursive: true });
+
+    const safeBaseName = `${this.sanitizeFileBaseName(objectName)}_Material`;
+    const fileName = await this.nextAvailableFileName(
+      generatedMaterialsDir,
+      safeBaseName,
+      ".mat"
+    );
+
+    return {
+      name: path.parse(fileName).name,
+      path: `Assets/GeneratedMaterials/${fileName}`
     };
   }
 
@@ -853,6 +1350,270 @@ class McpUnityClient {
     );
   }
 
+  private chooseTextureProperty(raw: unknown, text: string): string | undefined {
+    const properties = this.extractMaterialProperties(raw, text);
+    const textureProperties = properties.filter((property) =>
+      property.type.toLowerCase().includes("tex")
+    );
+    const priority = ["_BaseMap", "_MainTex", "_BaseColorMap"];
+
+    for (const propertyName of priority) {
+      if (textureProperties.some((property) => property.name === propertyName)) {
+        return propertyName;
+      }
+    }
+
+    return textureProperties[0]?.name;
+  }
+
+  private extractMaterialProperties(
+    raw: unknown,
+    text: string
+  ): MaterialPropertyInfo[] {
+    const fromRaw = this.findMaterialProperties(raw);
+    if (fromRaw.length > 0) {
+      return fromRaw;
+    }
+
+    const properties: MaterialPropertyInfo[] = [];
+    const propertyPattern = /^\s*([A-Za-z0-9_]+)\s+\(([^)]+)\):/gm;
+    let match = propertyPattern.exec(text);
+
+    while (match) {
+      properties.push({
+        name: match[1],
+        type: match[2]
+      });
+      match = propertyPattern.exec(text);
+    }
+
+    return properties;
+  }
+
+  private findMaterialProperties(value: unknown, depth = 0): MaterialPropertyInfo[] {
+    if (depth > 5 || !value || typeof value !== "object") {
+      return [];
+    }
+
+    if (Array.isArray(value)) {
+      const properties = value
+        .map((item): MaterialPropertyInfo | undefined => {
+          if (!item || typeof item !== "object") {
+            return undefined;
+          }
+
+          const maybeProperty = item as { name?: unknown; type?: unknown };
+          return typeof maybeProperty.name === "string" &&
+            typeof maybeProperty.type === "string"
+            ? {
+                name: maybeProperty.name,
+                type: maybeProperty.type
+              }
+            : undefined;
+        })
+        .filter((item): item is MaterialPropertyInfo => Boolean(item));
+
+      if (properties.length > 0) {
+        return properties;
+      }
+    }
+
+    const record = value as Record<string, unknown>;
+
+    if (Array.isArray(record.properties)) {
+      const properties = this.findMaterialProperties(record.properties, depth + 1);
+      if (properties.length > 0) {
+        return properties;
+      }
+    }
+
+    for (const child of Object.values(record)) {
+      const properties = this.findMaterialProperties(child, depth + 1);
+      if (properties.length > 0) {
+        return properties;
+      }
+    }
+
+    return [];
+  }
+
+  private async assignMaterialToRenderer(
+    client: Client,
+    instanceId: number,
+    materialPath: string
+  ): Promise<{ ok: true } | { ok: false; error: UnityActionErrorResponse }> {
+    try {
+      await this.callTool(
+        client,
+        "assign_material",
+        {
+          instanceId,
+          materialPath,
+          slot: 0
+        },
+        "Assigning material to Unity object"
+      );
+
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        error: {
+          ok: false,
+          error: "Unity/MCP material assignment failed.",
+          details: [
+            "The object was created, but the generated material could not be assigned to renderer slot 0.",
+            `Original error: ${getErrorMessage(error)}`
+          ]
+        }
+      };
+    }
+  }
+
+  private async assignMaterialToModelRenderers(
+    client: Client,
+    rootInstanceId: number,
+    materialPath: string
+  ): Promise<
+    | { ok: true; assignment: MaterialAssignmentResult }
+    | { ok: false; error: UnityActionErrorResponse }
+  > {
+    let rendererIds: number[];
+
+    try {
+      rendererIds = await this.findRendererInstanceIds(client, rootInstanceId);
+    } catch (error) {
+      return {
+        ok: false,
+        error: {
+          ok: false,
+          error: "Could not inspect imported model renderers.",
+          details: [
+            "The model was imported and transformed, but the backend could not inspect the hierarchy before assigning the material.",
+            `Original error: ${getErrorMessage(error)}`
+          ]
+        }
+      };
+    }
+
+    if (rendererIds.length === 0) {
+      return {
+        ok: false,
+        error: {
+          ok: false,
+          error: "No Renderer components found on the imported model.",
+          details: [
+            "The model was imported and transformed, but the backend could not find a renderer on the root object or its children.",
+            "No material was assigned."
+          ]
+        }
+      };
+    }
+
+    let assignedCount = 0;
+    const failures: string[] = [];
+
+    for (const rendererId of rendererIds) {
+      try {
+        await this.callTool(
+          client,
+          "assign_material",
+          {
+            instanceId: rendererId,
+            materialPath,
+            slot: 0
+          },
+          `Assigning material to renderer ${rendererId}`
+        );
+        assignedCount += 1;
+      } catch (error) {
+        failures.push(`Renderer ${rendererId}: ${getErrorMessage(error)}`);
+      }
+    }
+
+    if (assignedCount === 0) {
+      return {
+        ok: false,
+        error: {
+          ok: false,
+          error: "Unity/MCP material assignment failed for every renderer.",
+          details: [
+            "The model was imported and transformed, but no renderer accepted the generated material.",
+            ...failures
+          ]
+        }
+      };
+    }
+
+    return {
+      ok: true,
+      assignment: {
+        assignedCount,
+        totalRenderers: rendererIds.length,
+        failures
+      }
+    };
+  }
+
+  private async findRendererInstanceIds(
+    client: Client,
+    rootInstanceId: number
+  ): Promise<number[]> {
+    const result = await this.callTool(
+      client,
+      "get_gameobject",
+      {
+        idOrName: String(rootInstanceId)
+      },
+      "Reading imported model hierarchy"
+    );
+    const parsed = JSON.parse(result.text) as { gameObject?: unknown };
+    const rendererIds: number[] = [];
+
+    const visit = (node: unknown): void => {
+      if (!node || typeof node !== "object") {
+        return;
+      }
+
+      const objectNode = node as {
+        instanceId?: unknown;
+        components?: unknown;
+        children?: unknown;
+      };
+
+      if (
+        typeof objectNode.instanceId === "number" &&
+        this.hasRendererComponent(objectNode.components)
+      ) {
+        rendererIds.push(objectNode.instanceId);
+      }
+
+      if (Array.isArray(objectNode.children)) {
+        for (const child of objectNode.children) {
+          visit(child);
+        }
+      }
+    };
+
+    visit(parsed.gameObject);
+    return rendererIds;
+  }
+
+  private hasRendererComponent(components: unknown): boolean {
+    if (!Array.isArray(components)) {
+      return false;
+    }
+
+    return components.some((component) => {
+      if (!component || typeof component !== "object") {
+        return false;
+      }
+
+      const type = (component as { type?: unknown }).type;
+      return typeof type === "string" && type.endsWith("Renderer");
+    });
+  }
+
   private nextAvailableName(baseName: string, existingNames: Set<string>): string {
     if (!existingNames.has(baseName)) {
       return baseName;
@@ -866,7 +1627,7 @@ class McpUnityClient {
     return `${baseName}_${index}`;
   }
 
-  private async readHierarchySnapshot(client: Client): Promise<HierarchySnapshot> {
+  private async readHierarchyJson(client: Client): Promise<unknown> {
     const result = await withTimeout(
       client.request(
         {
@@ -888,8 +1649,152 @@ class McpUnityClient {
       throw new Error("Unity scene hierarchy response did not include JSON text.");
     }
 
-    const hierarchy = JSON.parse(text) as unknown;
-    return this.extractHierarchySnapshot(hierarchy);
+    return JSON.parse(text) as unknown;
+  }
+
+  private async readHierarchyObjects(client: Client): Promise<FlattenedHierarchyObject[]> {
+    return this.extractHierarchyObjects(await this.readHierarchyJson(client));
+  }
+
+  private async readHierarchySnapshot(client: Client): Promise<HierarchySnapshot> {
+    return this.extractHierarchySnapshot(await this.readHierarchyJson(client));
+  }
+
+  private getHierarchyScenes(hierarchy: unknown): unknown[] {
+    if (Array.isArray(hierarchy)) {
+      return hierarchy;
+    }
+
+    if (
+      hierarchy &&
+      typeof hierarchy === "object" &&
+      Array.isArray((hierarchy as { hierarchy?: unknown }).hierarchy)
+    ) {
+      return (hierarchy as { hierarchy: unknown[] }).hierarchy;
+    }
+
+    throw new Error("Unity scene hierarchy JSON was not an array.");
+  }
+
+  private extractHierarchyObjects(hierarchy: unknown): FlattenedHierarchyObject[] {
+    const objects: FlattenedHierarchyObject[] = [];
+
+    const visitObject = (
+      object: HierarchyObject,
+      parentPath: string,
+      sceneName?: string
+    ): void => {
+      const name = typeof object.name === "string" ? object.name : undefined;
+      const instanceId =
+        typeof object.instanceId === "number" ? object.instanceId : undefined;
+      const currentPath = name
+        ? parentPath
+          ? `${parentPath}/${name}`
+          : name
+        : parentPath;
+
+      if (name && instanceId !== undefined) {
+        objects.push({
+          name,
+          instanceId,
+          path: currentPath,
+          ...(sceneName ? { scenePath: `${sceneName}/${currentPath}` } : {})
+        });
+      }
+
+      if (Array.isArray(object.children)) {
+        for (const child of object.children) {
+          if (child && typeof child === "object") {
+            visitObject(child as HierarchyObject, currentPath, sceneName);
+          }
+        }
+      }
+    };
+
+    for (const scene of this.getHierarchyScenes(hierarchy)) {
+      if (!scene || typeof scene !== "object") {
+        continue;
+      }
+
+      const sceneRecord = scene as HierarchyScene & { name?: unknown };
+      const rootObjects = sceneRecord.rootObjects;
+      const sceneName =
+        typeof sceneRecord.name === "string" && sceneRecord.name.length > 0
+          ? sceneRecord.name
+          : undefined;
+
+      if (!Array.isArray(rootObjects)) {
+        continue;
+      }
+
+      for (const rootObject of rootObjects) {
+        if (rootObject && typeof rootObject === "object") {
+          visitObject(rootObject as HierarchyObject, "", sceneName);
+        }
+      }
+    }
+
+    return objects;
+  }
+
+  private resolveHierarchyTarget(
+    target: string,
+    objects: FlattenedHierarchyObject[]
+  ):
+    | { ok: true; object: FlattenedHierarchyObject }
+    | { ok: false; error: UnityActionErrorResponse } {
+    const trimmedTarget = target.trim();
+    const normalizedPathTarget = trimmedTarget
+      .split("/")
+      .filter((part) => part.length > 0)
+      .join("/");
+    const isNumericTarget = /^-?\d+$/.test(trimmedTarget);
+    const candidates = isNumericTarget
+      ? objects.filter((object) => object.instanceId === Number(trimmedTarget))
+      : trimmedTarget.includes("/")
+        ? objects.filter(
+            (object) =>
+              object.path === normalizedPathTarget ||
+              object.scenePath === normalizedPathTarget
+          )
+        : objects.filter((object) => object.name === trimmedTarget);
+
+    if (candidates.length === 0) {
+      return {
+        ok: false,
+        error: {
+          ok: false,
+          error: "Unity object target was not found.",
+          details: [
+            `No object matched "${target}".`,
+            "Use a unique object name, a hierarchy path such as Parent/Child, or an instance ID from the Unity hierarchy."
+          ]
+        }
+      };
+    }
+
+    if (candidates.length > 1) {
+      return {
+        ok: false,
+        error: {
+          ok: false,
+          error: "Unity object target is ambiguous.",
+          details: [
+            `Multiple objects matched "${target}".`,
+            "Use a full hierarchy path or an instance ID.",
+            ...candidates.map(
+              (object) =>
+                `${object.scenePath ?? object.path} (instanceId ${object.instanceId})`
+            )
+          ]
+        }
+      };
+    }
+
+    return {
+      ok: true,
+      object: candidates[0]
+    };
   }
 
   private extractHierarchySnapshot(hierarchy: unknown): HierarchySnapshot {
@@ -915,11 +1820,7 @@ class McpUnityClient {
       }
     };
 
-    if (!Array.isArray(hierarchy)) {
-      throw new Error("Unity scene hierarchy JSON was not an array.");
-    }
-
-    for (const scene of hierarchy) {
+    for (const scene of this.getHierarchyScenes(hierarchy)) {
       if (!scene || typeof scene !== "object") {
         continue;
       }
@@ -1053,6 +1954,9 @@ class McpUnityClient {
     this.verifiedAddCubeTool = false;
     this.verifiedCreateObjectTools = false;
     this.verifiedImportModelTools = false;
+    this.verifiedMaterialTools = false;
+    this.verifiedEditTransformTools = false;
+    this.verifiedSaveSceneTool = false;
     this.canRefreshAssets = false;
     this.connectPromise = undefined;
 
