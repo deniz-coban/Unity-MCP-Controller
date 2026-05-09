@@ -1,4 +1,5 @@
 import type {
+  CreateLightPayload,
   CreateObjectPayload,
   EditTransformPayload,
   HealthResponse,
@@ -72,6 +73,13 @@ export const api = {
 
   importModel(formData: FormData): Promise<UnityActionResponse> {
     return requestForm<UnityActionResponse>("/api/unity/import-model", formData);
+  },
+
+  createLight(payload: CreateLightPayload): Promise<UnityActionResponse> {
+    return requestJson<UnityActionResponse>("/api/unity/create-light", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
   },
 
   addSphere(): Promise<UnityActionResponse> {

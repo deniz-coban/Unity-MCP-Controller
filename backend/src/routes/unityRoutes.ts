@@ -7,6 +7,7 @@ import { unityConfig } from "../config.js";
 import { unityClient } from "../unityClient.js";
 import type { UnityActionResponse } from "../types.js";
 import {
+  validateCreateLightPayload,
   validateCreateObjectMultipartPayload,
   validateCreateObjectPayload,
   validateEditTransformPayload,
@@ -181,6 +182,25 @@ unityRoutes.post("/create-object", async (req, res) => {
   }
 
   sendUnityResponse(res, await unityClient.createObject(result.payload));
+});
+
+unityRoutes.post("/create-light", async (req, res) => {
+  if (!ensureSceneCreated(res)) {
+    return;
+  }
+
+  const result = validateCreateLightPayload(req.body);
+
+  if (!result.ok) {
+    res.status(400).json({
+      ok: false,
+      error: "Invalid create light request.",
+      details: result.details
+    });
+    return;
+  }
+
+  sendUnityResponse(res, await unityClient.createLight(result.payload));
 });
 
 unityRoutes.post("/import-model", (req, res) => {

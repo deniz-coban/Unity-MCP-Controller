@@ -10,11 +10,13 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { isMcpConfigured, unityConfig } from "./config.js";
 import type {
+  CreateLightPayload,
   CreateObjectPayload,
   EditTransformPayload,
   ImportModelPayload,
   UploadedTextureFile,
   UnityDefaultObjectType,
+  UnityLightType,
   UnityActionErrorResponse,
   UnityActionSuccessResponse
 } from "./types.js";
@@ -101,6 +103,7 @@ interface MaterialAssignmentResult {
 }
 
 const hierarchyResourceUri = "unity://scenes_hierarchy";
+const menuItemsResourceUri = "unity://menu-items";
 
 const objectMenuPaths: Record<UnityDefaultObjectType, string> = {
   cube: "GameObject/3D Object/Cube",
@@ -109,6 +112,12 @@ const objectMenuPaths: Record<UnityDefaultObjectType, string> = {
   cylinder: "GameObject/3D Object/Cylinder",
   plane: "GameObject/3D Object/Plane",
   quad: "GameObject/3D Object/Quad"
+};
+
+const lightMenuPaths: Record<UnityLightType, string> = {
+  directional: "GameObject/Light/Directional Light",
+  point: "GameObject/Light/Point Light",
+  spot: "GameObject/Light/Spot Light"
 };
 
 const getErrorMessage = (error: unknown): string =>
@@ -200,6 +209,7 @@ class McpUnityClient {
   private verifiedMaterialTools = false;
   private verifiedEditTransformTools = false;
   private verifiedSaveSceneTool = false;
+  private verifiedCreateLightTools = false;
   private canRefreshAssets = false;
 
   async addCube(): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
@@ -396,6 +406,128 @@ class McpUnityClient {
           "Open the UnityMCPDemo project in Unity Editor.",
           "Open Tools > MCP Unity > Server Window and click Start Server.",
           "If the object was created but transform editing failed, check the Unity Console before trying again.",
+          `Original error: ${getErrorMessage(error)}`
+        ]
+      };
+    }
+  }
+
+  async createLight(
+    payload: CreateLightPayload
+  ): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
+    if (!isMcpConfigured()) {
+      return configurationError([
+        "Set UNITY_MCP_SERVER_ARGS to the absolute path of mcp-unity/Server~/build/index.js.",
+        "UNITY_MCP_SERVER_COMMAND defaults to node."
+      ]);
+    }
+
+    try {
+      const client = await this.connect();
+      await this.verifyCreateLightTools(client);
+
+      const beforeSnapshot = await this.readHierarchySnapshot(client);
+      const finalName = this.nextAvailableName(payload.name, beforeSnapshot.names);
+
+      await this.callTool(
+        client,
+        "execute_menu_item",
+        {
+          menuPath: lightMenuPaths[payload.type]
+        },
+        `Creating Unity ${payload.type} light`
+      );
+
+      const newInstanceId = await this.findNewObjectInstanceId(
+        client,
+        beforeSnapshot.instanceIds
+      );
+
+      if (newInstanceId === undefined) {
+        return {
+          ok: false,
+          error: "Could not safely identify the new Unity light.",
+          details: [
+            "The light menu item was executed, but the backend could not find exactly one new instanceId in the scene hierarchy.",
+            "No existing object was renamed, transformed, or edited."
+          ]
+        };
+      }
+
+      await this.callTool(
+        client,
+        "update_gameobject",
+        {
+          instanceId: newInstanceId,
+          gameObjectData: {
+            name: finalName
+          }
+        },
+        "Renaming Unity light"
+      );
+
+      await this.callTool(
+        client,
+        "set_transform",
+        {
+          instanceId: newInstanceId,
+          position: payload.position,
+          rotation: payload.rotation,
+          space: "world"
+        },
+        "Setting Unity light position and rotation"
+      );
+
+      try {
+        await this.callTool(
+          client,
+          "update_component",
+          {
+            instanceId: newInstanceId,
+            componentName: "Light",
+            componentData: {
+              intensity: payload.intensity,
+              color: payload.color
+            }
+          },
+          "Setting Unity light intensity and color"
+        );
+      } catch (error) {
+        return {
+          ok: false,
+          error: "Unity/MCP light property update failed.",
+          details: [
+            `The ${payload.type} light was created as "${finalName}", renamed, and transformed.`,
+            "The backend could not apply intensity and color through update_component.",
+            `Original error: ${getErrorMessage(error)}`
+          ]
+        };
+      }
+
+      return {
+        ok: true,
+        mode: "mcp",
+        action: "createLight",
+        message: `Created ${payload.type} light "${finalName}" in Unity.`,
+        data: {
+          instanceId: newInstanceId,
+          requestedName: payload.name,
+          light: {
+            ...payload,
+            name: finalName
+          },
+          menuPath: lightMenuPaths[payload.type]
+        }
+      };
+    } catch (error) {
+      await this.reset();
+      return {
+        ok: false,
+        error: "Unity/MCP create light failed.",
+        details: [
+          "Open the UnityMCPDemo project in Unity Editor.",
+          "Open Tools > MCP Unity > Server Window and click Start Server.",
+          "The backend verifies the MCP schemas and Unity light menu paths before creating a light.",
           `Original error: ${getErrorMessage(error)}`
         ]
       };
@@ -857,6 +989,49 @@ class McpUnityClient {
     }
 
     this.verifiedMaterialTools = true;
+  }
+
+  private async verifyCreateLightTools(client: Client): Promise<void> {
+    if (this.verifiedCreateLightTools) {
+      return;
+    }
+
+    const [toolsResult, resourcesResult] = await Promise.all([
+      withTimeout(
+        client.request({ method: "tools/list" }, ListToolsResultSchema),
+        "Listing Unity MCP tools"
+      ),
+      withTimeout(
+        client.request({ method: "resources/list" }, ListResourcesResultSchema),
+        "Listing Unity MCP resources"
+      )
+    ]);
+
+    this.assertToolStringArgument(toolsResult.tools, "execute_menu_item", "menuPath");
+    this.assertToolObjectArgument(toolsResult.tools, "update_gameobject", "gameObjectData");
+    this.assertToolObjectArgument(toolsResult.tools, "set_transform", "position");
+    this.assertToolObjectArgument(toolsResult.tools, "set_transform", "rotation");
+    this.assertToolStringArgument(toolsResult.tools, "update_component", "componentName");
+    this.assertToolObjectArgument(toolsResult.tools, "update_component", "componentData");
+
+    for (const resourceUri of [hierarchyResourceUri, menuItemsResourceUri]) {
+      if (!resourcesResult.resources.some((resource) => resource.uri === resourceUri)) {
+        throw new Error(`MCP resource "${resourceUri}" was not found.`);
+      }
+    }
+
+    const menuItems = await this.readMenuItems(client);
+    const missingMenuPaths = Object.values(lightMenuPaths).filter(
+      (menuPath) => !menuItems.includes(menuPath)
+    );
+
+    if (missingMenuPaths.length > 0) {
+      throw new Error(
+        `Unity light menu paths were not found in ${menuItemsResourceUri}: ${missingMenuPaths.join(", ")}.`
+      );
+    }
+
+    this.verifiedCreateLightTools = true;
   }
 
   private async verifyEditTransformTools(client: Client): Promise<void> {
@@ -1348,6 +1523,38 @@ class McpUnityClient {
         asset !== null &&
         typeof (asset as UnityAssetInfo).path === "string"
     );
+  }
+
+  private async readMenuItems(client: Client): Promise<string[]> {
+    const result = await withTimeout(
+      client.request(
+        {
+          method: "resources/read",
+          params: {
+            uri: menuItemsResourceUri
+          }
+        },
+        ReadResourceResultSchema
+      ),
+      "Reading Unity menu items"
+    );
+
+    const text = result.contents
+      .map((content) => ("text" in content && typeof content.text === "string" ? content.text : ""))
+      .find(Boolean);
+
+    if (!text) {
+      throw new Error("Unity menu items response did not include JSON text.");
+    }
+
+    const parsed = JSON.parse(text) as unknown;
+    const items = Array.isArray(parsed)
+      ? parsed
+      : parsed && typeof parsed === "object" && Array.isArray((parsed as { menuItems?: unknown }).menuItems)
+        ? (parsed as { menuItems: unknown[] }).menuItems
+        : [];
+
+    return items.filter((item): item is string => typeof item === "string");
   }
 
   private chooseTextureProperty(raw: unknown, text: string): string | undefined {
@@ -1957,6 +2164,7 @@ class McpUnityClient {
     this.verifiedMaterialTools = false;
     this.verifiedEditTransformTools = false;
     this.verifiedSaveSceneTool = false;
+    this.verifiedCreateLightTools = false;
     this.canRefreshAssets = false;
     this.connectPromise = undefined;
 

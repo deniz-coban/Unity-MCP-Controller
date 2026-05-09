@@ -2,6 +2,7 @@ import { unityConfig } from "./config.js";
 import { mcpUnityClient } from "./mcpUnityClient.js";
 import { mockUnityClient } from "./mockUnityClient.js";
 import type {
+  CreateLightPayload,
   CreateObjectPayload,
   EditTransformPayload,
   ImportModelPayload,
@@ -36,6 +37,12 @@ export const unityClient = {
     return isMcpMode()
       ? mcpUnityClient.createObject(payload)
       : mockUnityClient.createObject(payload);
+  },
+
+  createLight(payload: CreateLightPayload): Promise<UnityActionResponse> | UnityActionResponse {
+    return isMcpMode()
+      ? mcpUnityClient.createLight(payload)
+      : mockUnityClient.createLight(payload);
   },
 
   importModel(payload: ImportModelPayload): Promise<UnityActionResponse> | UnityActionResponse {

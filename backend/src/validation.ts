@@ -1,4 +1,6 @@
 import type {
+  ColorRGBA,
+  CreateLightPayload,
   CreateObjectPayload,
   EditTransformPayload,
   ImportModelPayload,
@@ -7,6 +9,7 @@ import type {
   TextureFileExtension,
   UploadedTextureFile,
   UnityDefaultObjectType,
+  UnityLightType,
   Vector3
 } from "./types.js";
 import path from "node:path";
@@ -20,6 +23,12 @@ export const unityDefaultObjectTypes = [
   "plane",
   "quad"
 ] as const satisfies readonly UnityDefaultObjectType[];
+
+export const unityLightTypes = [
+  "directional",
+  "point",
+  "spot"
+] as const satisfies readonly UnityLightType[];
 
 export const supportedModelExtensions = [
   ".fbx",
@@ -56,6 +65,34 @@ const parseFiniteNumber = (value: unknown): number | undefined => {
 const isUnityDefaultObjectType = (value: unknown): value is UnityDefaultObjectType =>
   typeof value === "string" &&
   unityDefaultObjectTypes.includes(value.toLowerCase() as UnityDefaultObjectType);
+
+const isUnityLightType = (value: unknown): value is UnityLightType =>
+  typeof value === "string" &&
+  unityLightTypes.includes(value.toLowerCase() as UnityLightType);
+
+const parseHexColor = (value: unknown): ColorRGBA | undefined => {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  const match = /^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.exec(trimmed);
+
+  if (!match) {
+    return undefined;
+  }
+
+  const hex = match[1];
+  const readChannel = (start: number): number =>
+    Number.parseInt(hex.slice(start, start + 2), 16) / 255;
+
+  return {
+    r: readChannel(0),
+    g: readChannel(2),
+    b: readChannel(4),
+    a: hex.length === 8 ? readChannel(6) : 1
+  };
+};
 
 const validateVector3 = (
   value: unknown,
@@ -343,6 +380,77 @@ export const validateCreateObjectPayload = (
       position,
       rotation,
       scale
+    }
+  };
+};
+
+export const validateCreateLightPayload = (
+  body: unknown
+): { ok: true; payload: CreateLightPayload } | { ok: false; details: string[] } => {
+  const details: string[] = [];
+
+  if (!isRecord(body)) {
+    return { ok: false, details: ["Request body must be a JSON object."] };
+  }
+
+  const type = typeof body.type === "string" ? body.type.toLowerCase() : body.type;
+
+  if (!isUnityLightType(type)) {
+    details.push(`type must be one of: ${unityLightTypes.join(", ")}.`);
+  }
+
+  if (typeof body.name !== "string" || body.name.trim().length === 0) {
+    details.push("name is required.");
+  }
+
+  const position = validateVector3(
+    body.position,
+    "position",
+    { requirePositive: false },
+    details
+  );
+  const rotation = validateVector3(
+    body.rotation,
+    "rotation",
+    { requirePositive: false },
+    details
+  );
+  const intensity = parseFiniteNumber(body.intensity);
+
+  if (intensity === undefined) {
+    details.push("intensity must be a finite number.");
+  } else if (intensity < 0) {
+    details.push("intensity must be greater than or equal to 0.");
+  }
+
+  const color = parseHexColor(body.color);
+  if (!color) {
+    details.push("color must be #RRGGBB or #RRGGBBAA.");
+  }
+
+  if (
+    details.length > 0 ||
+    !position ||
+    !rotation ||
+    intensity === undefined ||
+    !color ||
+    !isUnityLightType(type)
+  ) {
+    return { ok: false, details };
+  }
+
+  const colorHex = (body.color as string).trim();
+
+  return {
+    ok: true,
+    payload: {
+      type,
+      name: (body.name as string).trim(),
+      position,
+      rotation,
+      intensity,
+      color,
+      colorHex
     }
   };
 };

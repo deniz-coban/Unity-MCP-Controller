@@ -18,6 +18,13 @@ export interface EditTransformPayload {
   scale: Vector3;
 }
 
+export interface ColorRGBA {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+}
+
 export type UnityDefaultObjectType =
   | "cube"
   | "sphere"
@@ -25,6 +32,8 @@ export type UnityDefaultObjectType =
   | "cylinder"
   | "plane"
   | "quad";
+
+export type UnityLightType = "directional" | "point" | "spot";
 
 export interface CreateObjectPayload {
   type: UnityDefaultObjectType;
@@ -67,6 +76,23 @@ export interface ImportModelPayload {
   texture?: UploadedTextureFile;
 }
 
+export interface CreateLightPayload {
+  type: UnityLightType;
+  name: string;
+  position: Vector3;
+  rotation: Vector3;
+  intensity: number;
+  color: ColorRGBA;
+  colorHex: string;
+}
+
+export interface MockLightData {
+  lightType: UnityLightType;
+  intensity: number;
+  color: ColorRGBA;
+  colorHex: string;
+}
+
 export type MockObjectType = UnityDefaultObjectType | "light" | "model";
 
 export interface MockObject {
@@ -76,6 +102,7 @@ export interface MockObject {
   rotation: Vector3;
   scale: Vector3;
   texture?: TextureMetadata;
+  light?: MockLightData;
 }
 
 export interface MockSceneState {
@@ -88,6 +115,7 @@ export type UnityClientMode = "mock" | "mcp";
 export type UnityAction =
   | "createScene"
   | "createObject"
+  | "createLight"
   | "importModel"
   | "addCube"
   | "addSphere"

@@ -16,6 +16,17 @@ export interface EditTransformPayload {
   scale: Vector3;
 }
 
+export type UnityLightType = "directional" | "point" | "spot";
+
+export interface CreateLightPayload {
+  type: UnityLightType;
+  name: string;
+  position: Vector3;
+  rotation: Vector3;
+  intensity: number;
+  color: string;
+}
+
 export type UnityDefaultObjectType =
   | "cube"
   | "sphere"
@@ -35,6 +46,7 @@ export interface CreateObjectPayload {
 export type UnityAction =
   | "createScene"
   | "createObject"
+  | "createLight"
   | "importModel"
   | "addCube"
   | "addSphere"

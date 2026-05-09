@@ -2,9 +2,11 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type {
   BackendMode,
+  CreateLightPayload,
   CreateObjectPayload,
   EditTransformPayload,
   UnityDefaultObjectType,
+  UnityLightType,
   UnityActionErrorResponse
 } from "./types";
 
@@ -62,6 +64,60 @@ const defaultImportModelValues = {
   scaleZ: "1"
 };
 
+const lightDefaults: Record<
+  UnityLightType,
+  {
+    name: string;
+    positionX: string;
+    positionY: string;
+    positionZ: string;
+    rotationX: string;
+    rotationY: string;
+    rotationZ: string;
+    intensity: string;
+    color: string;
+  }
+> = {
+  directional: {
+    name: "Directional Light",
+    positionX: "0",
+    positionY: "3",
+    positionZ: "0",
+    rotationX: "50",
+    rotationY: "-30",
+    rotationZ: "0",
+    intensity: "1",
+    color: "#ffffff"
+  },
+  point: {
+    name: "Point Light",
+    positionX: "0",
+    positionY: "3",
+    positionZ: "0",
+    rotationX: "0",
+    rotationY: "0",
+    rotationZ: "0",
+    intensity: "1",
+    color: "#ffffff"
+  },
+  spot: {
+    name: "Spot Light",
+    positionX: "0",
+    positionY: "3",
+    positionZ: "0",
+    rotationX: "50",
+    rotationY: "0",
+    rotationZ: "0",
+    intensity: "1",
+    color: "#ffffff"
+  }
+};
+
+const defaultCreateLightValues = {
+  type: "directional" as UnityLightType,
+  ...lightDefaults.directional
+};
+
 const objectTypeOptions: Array<{ value: UnityDefaultObjectType; label: string }> = [
   { value: "cube", label: "Cube" },
   { value: "sphere", label: "Sphere" },
@@ -71,8 +127,15 @@ const objectTypeOptions: Array<{ value: UnityDefaultObjectType; label: string }>
   { value: "quad", label: "Quad" }
 ];
 
+const lightTypeOptions: Array<{ value: UnityLightType; label: string }> = [
+  { value: "directional", label: "Directional Light" },
+  { value: "point", label: "Point Light" },
+  { value: "spot", label: "Spot Light" }
+];
+
 const scalePresets = ["0.01", "0.1", "1", "10", "100", "1000"];
 const textureFilePattern = /\.(png|jpe?g)$/i;
+const colorHexPattern = /^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
 
 const getDefaultCreateObjectValues = (type: UnityDefaultObjectType) => {
   const option = objectTypeOptions.find((item) => item.value === type);
@@ -83,6 +146,11 @@ const getDefaultCreateObjectValues = (type: UnityDefaultObjectType) => {
     name: option?.label ?? "Object"
   };
 };
+
+const getDefaultCreateLightValues = (type: UnityLightType) => ({
+  type,
+  ...lightDefaults[type]
+});
 
 const formatError = (error: unknown): string[] => {
   const maybeError = error as Partial<UnityActionErrorResponse>;
@@ -181,6 +249,61 @@ const buildCreateObjectRequest = (
   formData.append("texture", values.textureFile);
 
   return formData;
+};
+
+const buildCreateLightRequest = (
+  values: typeof defaultCreateLightValues
+): CreateLightPayload | string => {
+  const name = values.name.trim();
+  const position = {
+    x: Number(values.positionX),
+    y: Number(values.positionY),
+    z: Number(values.positionZ)
+  };
+  const rotation = {
+    x: Number(values.rotationX),
+    y: Number(values.rotationY),
+    z: Number(values.rotationZ)
+  };
+  const intensity = Number(values.intensity);
+  const color = values.color.trim();
+
+  if (!name) {
+    return "Light name is required.";
+  }
+
+  if (
+    !Number.isFinite(position.x) ||
+    !Number.isFinite(position.y) ||
+    !Number.isFinite(position.z)
+  ) {
+    return "Position values must be valid numbers.";
+  }
+
+  if (
+    !Number.isFinite(rotation.x) ||
+    !Number.isFinite(rotation.y) ||
+    !Number.isFinite(rotation.z)
+  ) {
+    return "Rotation values must be valid numbers.";
+  }
+
+  if (!Number.isFinite(intensity) || intensity < 0) {
+    return "Intensity must be a valid number greater than or equal to 0.";
+  }
+
+  if (!colorHexPattern.test(color)) {
+    return "Color must be #RRGGBB or #RRGGBBAA.";
+  }
+
+  return {
+    type: values.type,
+    name,
+    position,
+    rotation,
+    intensity,
+    color
+  };
 };
 
 const fileNameToObjectName = (fileName: string): string => {
@@ -342,6 +465,9 @@ export default function App() {
   const [createObjectValues, setCreateObjectValues] = useState(
     defaultCreateObjectValues
   );
+  const [createLightValues, setCreateLightValues] = useState(
+    defaultCreateLightValues
+  );
   const [importModelValues, setImportModelValues] = useState(
     defaultImportModelValues
   );
@@ -372,7 +498,7 @@ export default function App() {
   const isMcpMode = backendMode === "mcp";
   const modeEyebrow = isMcpMode ? "UNITY MCP MODE" : "LOCAL MOCK MODE";
   const sceneActionSubtitle = isMcpMode
-    ? "Connected through Unity MCP. Default objects, model imports, textures, and transform editing are enabled."
+    ? "Connected through Unity MCP. Default objects, lights, model imports, textures, and transform editing are enabled."
     : "Mock responses only. No Unity or MCP connection is active.";
 
   const addLog = (entry: Omit<LogEntry, "id">) => {
@@ -459,6 +585,23 @@ export default function App() {
     }
 
     void runAction("Create object", () => api.createObject(payload));
+  };
+
+  const submitCreateLight = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    const payload = buildCreateLightRequest(createLightValues);
+
+    if (typeof payload === "string") {
+      addLog({
+        tone: "error",
+        title: "Create light failed",
+        details: [payload]
+      });
+      return;
+    }
+
+    void runAction("Create light", () => api.createLight(payload));
   };
 
   const clearCreateTextureFile = () => {
@@ -734,6 +877,136 @@ export default function App() {
         </div>
         <button disabled={isBusy} type="submit">
           Create object
+        </button>
+      </form>
+
+      <form className="panel" onSubmit={submitCreateLight}>
+        <div className="panel-heading">
+          <h2>Create light</h2>
+          <p>Create a Unity light with an initial transform, intensity, and color.</p>
+        </div>
+        <div className="field-stack">
+          <label>
+            Light type
+            <select
+              value={createLightValues.type}
+              onChange={(event) =>
+                setCreateLightValues(
+                  getDefaultCreateLightValues(event.target.value as UnityLightType)
+                )
+              }
+            >
+              {lightTypeOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Light name
+            <input
+              value={createLightValues.name}
+              onChange={(event) =>
+                setCreateLightValues((current) => ({
+                  ...current,
+                  name: event.target.value
+                }))
+              }
+              placeholder="Sun"
+            />
+          </label>
+          <div className="coordinate-groups">
+            <fieldset>
+              <legend>Position</legend>
+              <div className="coordinate-row">
+                {(["X", "Y", "Z"] as const).map((axis) => (
+                  <label key={axis}>
+                    {axis}
+                    <input
+                      value={createLightValues[`position${axis}`]}
+                      onChange={(event) =>
+                        setCreateLightValues((current) => ({
+                          ...current,
+                          [`position${axis}`]: event.target.value
+                        }))
+                      }
+                      inputMode="decimal"
+                    />
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend>Rotation</legend>
+              <div className="coordinate-row">
+                {(["X", "Y", "Z"] as const).map((axis) => (
+                  <label key={axis}>
+                    {axis}
+                    <input
+                      value={createLightValues[`rotation${axis}`]}
+                      onChange={(event) =>
+                        setCreateLightValues((current) => ({
+                          ...current,
+                          [`rotation${axis}`]: event.target.value
+                        }))
+                      }
+                      inputMode="decimal"
+                    />
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          </div>
+          <div className="coordinate-row">
+            <label>
+              Intensity
+              <input
+                value={createLightValues.intensity}
+                onChange={(event) =>
+                  setCreateLightValues((current) => ({
+                    ...current,
+                    intensity: event.target.value
+                  }))
+                }
+                inputMode="decimal"
+              />
+            </label>
+            <label>
+              Color
+              <input
+                value={createLightValues.color}
+                onChange={(event) =>
+                  setCreateLightValues((current) => ({
+                    ...current,
+                    color: event.target.value
+                  }))
+                }
+                placeholder="#ffffff"
+              />
+            </label>
+            <label>
+              Preview
+              <input
+                aria-label="Light color picker"
+                type="color"
+                value={
+                  colorHexPattern.test(createLightValues.color)
+                    ? createLightValues.color.slice(0, 7)
+                    : "#ffffff"
+                }
+                onChange={(event) =>
+                  setCreateLightValues((current) => ({
+                    ...current,
+                    color: event.target.value
+                  }))
+                }
+              />
+            </label>
+          </div>
+        </div>
+        <button disabled={isBusy} type="submit">
+          Create light
         </button>
       </form>
 

@@ -2,6 +2,7 @@ import type {
   MockObject,
   MockObjectType,
   MockSceneState,
+  CreateLightPayload,
   CreateObjectPayload,
   EditTransformPayload,
   ImportModelPayload,
@@ -51,7 +52,15 @@ const cloneState = (): MockSceneState => ({
     position: { ...object.position },
     rotation: { ...object.rotation },
     scale: { ...object.scale },
-    ...(object.texture ? { texture: { ...object.texture } } : {})
+    ...(object.texture ? { texture: { ...object.texture } } : {}),
+    ...(object.light
+      ? {
+          light: {
+            ...object.light,
+            color: { ...object.light.color }
+          }
+        }
+      : {})
   }))
 });
 
@@ -151,6 +160,43 @@ const createObject = (
   );
 };
 
+const createLight = (
+  payload: CreateLightPayload,
+  action: UnityAction = "createLight"
+): UnityActionResponse => {
+  const sceneError = ensureScene();
+  if (sceneError) {
+    return sceneError;
+  }
+
+  const finalName = nextObjectName(payload.name);
+  const object: MockObject = {
+    name: finalName,
+    type: "light",
+    position: { ...payload.position },
+    rotation: { ...payload.rotation },
+    scale: { ...defaultScale },
+    light: {
+      lightType: payload.type,
+      intensity: payload.intensity,
+      color: { ...payload.color },
+      colorHex: payload.colorHex
+    }
+  };
+
+  state.objects.push(object);
+
+  return mockSuccess(
+    action,
+    `Mock ${payload.type} light created as ${finalName}.`,
+    {
+      object,
+      requestedName: payload.name,
+      state: cloneState()
+    }
+  );
+};
+
 export const mockUnityClient = {
   hasScene(): boolean {
     return state.sceneCreated;
@@ -180,6 +226,10 @@ export const mockUnityClient = {
 
   createObject(payload: CreateObjectPayload): UnityActionResponse {
     return createObject(payload);
+  },
+
+  createLight(payload: CreateLightPayload): UnityActionResponse {
+    return createLight(payload);
   },
 
   importModel(payload: ImportModelPayload): UnityActionResponse {
@@ -232,7 +282,18 @@ export const mockUnityClient = {
   },
 
   addLight(): UnityActionResponse {
-    return addObject("addLight", "Light", "light");
+    return createLight(
+      {
+        type: "point",
+        name: "Light",
+        position: { ...defaultPosition },
+        rotation: { ...defaultRotation },
+        intensity: 1,
+        color: { r: 1, g: 1, b: 1, a: 1 },
+        colorHex: "#ffffff"
+      },
+      "addLight"
+    );
   },
 
   moveObject(payload: ObjectTransformPayload): UnityActionResponse {
