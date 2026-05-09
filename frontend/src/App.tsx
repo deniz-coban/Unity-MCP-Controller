@@ -1,6 +1,10 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
-import type { ObjectTransformPayload, UnityActionErrorResponse } from "./types";
+import type {
+  BackendMode,
+  ObjectTransformPayload,
+  UnityActionErrorResponse
+} from "./types";
 
 type BackendStatus = "checking" | "online" | "offline";
 
@@ -77,6 +81,7 @@ const parseTransform = (
 
 export default function App() {
   const [backendStatus, setBackendStatus] = useState<BackendStatus>("checking");
+  const [backendMode, setBackendMode] = useState<BackendMode>("mock");
   const [isBusy, setIsBusy] = useState(false);
   const [moveValues, setMoveValues] = useState(defaultTransform);
   const [scaleValues, setScaleValues] = useState(defaultScaleTransform);
@@ -84,14 +89,14 @@ export default function App() {
     {
       id: Date.now(),
       tone: "success",
-      title: "Mock controller ready.",
-      details: ["Create a scene first, then add mock objects and transform them."]
+      title: "Controller ready.",
+      details: ["Backend mode is loaded from the health check."]
     }
   ]);
 
   const statusLabel = useMemo(() => {
     if (backendStatus === "online") {
-      return "Backend online";
+      return `Backend online: ${backendMode.toUpperCase()}`;
     }
 
     if (backendStatus === "offline") {
@@ -99,7 +104,14 @@ export default function App() {
     }
 
     return "Checking backend";
-  }, [backendStatus]);
+  }, [backendMode, backendStatus]);
+
+  const isMcpMode = backendMode === "mcp";
+  const modeEyebrow = isMcpMode ? "UNITY MCP MODE" : "LOCAL MOCK MODE";
+  const sceneActionSubtitle = isMcpMode
+    ? "Connected through Unity MCP. Currently only Add cube is enabled."
+    : "Mock responses only. No Unity or MCP connection is active.";
+  const mcpOnlyDisabled = isBusy || isMcpMode;
 
   const addLog = (entry: Omit<LogEntry, "id">) => {
     setLogs((current) => [
@@ -116,6 +128,9 @@ export default function App() {
 
     try {
       const health = await api.health();
+      if (health.mode) {
+        setBackendMode(health.mode);
+      }
       setBackendStatus(health.ok ? "online" : "offline");
     } catch {
       setBackendStatus("offline");
@@ -180,7 +195,7 @@ export default function App() {
     <main className="app-shell">
       <section className="top-bar">
         <div>
-          <p className="eyebrow">Local mock mode</p>
+          <p className="eyebrow">{modeEyebrow}</p>
           <h1>Unity MCP Controller</h1>
         </div>
         <button className={`status-pill ${backendStatus}`} onClick={checkBackend}>
@@ -192,22 +207,34 @@ export default function App() {
       <section className="panel">
         <div className="panel-heading">
           <h2>Scene actions</h2>
-          <p>Mock responses only. No Unity or MCP connection is active.</p>
+          <p>{sceneActionSubtitle}</p>
         </div>
         <div className="button-grid">
-          <button disabled={isBusy} onClick={() => void runAction("Create scene", api.createScene)}>
+          <button
+            disabled={mcpOnlyDisabled}
+            onClick={() => void runAction("Create scene", api.createScene)}
+          >
             Create scene
           </button>
           <button disabled={isBusy} onClick={() => void runAction("Add cube", api.addCube)}>
             Add cube
           </button>
-          <button disabled={isBusy} onClick={() => void runAction("Add sphere", api.addSphere)}>
+          <button
+            disabled={mcpOnlyDisabled}
+            onClick={() => void runAction("Add sphere", api.addSphere)}
+          >
             Add sphere
           </button>
-          <button disabled={isBusy} onClick={() => void runAction("Add light", api.addLight)}>
+          <button
+            disabled={mcpOnlyDisabled}
+            onClick={() => void runAction("Add light", api.addLight)}
+          >
             Add light
           </button>
-          <button disabled={isBusy} onClick={() => void runAction("Save scene", api.saveScene)}>
+          <button
+            disabled={mcpOnlyDisabled}
+            onClick={() => void runAction("Save scene", api.saveScene)}
+          >
             Save scene
           </button>
         </div>
@@ -219,7 +246,7 @@ export default function App() {
             <h2>Move object</h2>
           </div>
           <TransformFields values={moveValues} onChange={setMoveValues} />
-          <button disabled={isBusy} type="submit">
+          <button disabled={mcpOnlyDisabled} type="submit">
             Move object
           </button>
         </form>
@@ -229,7 +256,7 @@ export default function App() {
             <h2>Scale object</h2>
           </div>
           <TransformFields values={scaleValues} onChange={setScaleValues} />
-          <button disabled={isBusy} type="submit">
+          <button disabled={mcpOnlyDisabled} type="submit">
             Scale object
           </button>
         </form>

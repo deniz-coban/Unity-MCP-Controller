@@ -18,9 +18,11 @@ export type UnityAction =
   | "scaleObject"
   | "saveScene";
 
+export type BackendMode = "mock" | "mcp";
+
 export interface UnityActionSuccessResponse {
   ok: true;
-  mode: "mock";
+  mode: BackendMode;
   action: UnityAction;
   message: string;
   data?: unknown;
@@ -39,5 +41,5 @@ export type UnityActionResponse =
 export interface HealthResponse {
   ok: boolean;
   service?: string;
-  mode?: "mock";
+  mode?: BackendMode;
 }

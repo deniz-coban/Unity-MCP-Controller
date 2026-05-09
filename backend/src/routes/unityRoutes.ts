@@ -28,23 +28,23 @@ const ensureSceneCreated = (res: Response): boolean => {
   return true;
 };
 
-unityRoutes.post("/create-scene", (_req, res) => {
-  res.json(unityClient.createScene());
+unityRoutes.post("/create-scene", async (_req, res) => {
+  sendUnityResponse(res, await unityClient.createScene());
 });
 
-unityRoutes.post("/add-cube", (_req, res) => {
-  sendUnityResponse(res, unityClient.addCube());
+unityRoutes.post("/add-cube", async (_req, res) => {
+  sendUnityResponse(res, await unityClient.addCube());
 });
 
-unityRoutes.post("/add-sphere", (_req, res) => {
-  sendUnityResponse(res, unityClient.addSphere());
+unityRoutes.post("/add-sphere", async (_req, res) => {
+  sendUnityResponse(res, await unityClient.addSphere());
 });
 
-unityRoutes.post("/add-light", (_req, res) => {
-  sendUnityResponse(res, unityClient.addLight());
+unityRoutes.post("/add-light", async (_req, res) => {
+  sendUnityResponse(res, await unityClient.addLight());
 });
 
-unityRoutes.post("/move-object", (req, res) => {
+unityRoutes.post("/move-object", async (req, res) => {
   if (!ensureSceneCreated(res)) {
     return;
   }
@@ -60,10 +60,10 @@ unityRoutes.post("/move-object", (req, res) => {
     return;
   }
 
-  sendUnityResponse(res, unityClient.moveObject(result.payload));
+  sendUnityResponse(res, await unityClient.moveObject(result.payload));
 });
 
-unityRoutes.post("/scale-object", (req, res) => {
+unityRoutes.post("/scale-object", async (req, res) => {
   if (!ensureSceneCreated(res)) {
     return;
   }
@@ -81,9 +81,9 @@ unityRoutes.post("/scale-object", (req, res) => {
     return;
   }
 
-  sendUnityResponse(res, unityClient.scaleObject(result.payload));
+  sendUnityResponse(res, await unityClient.scaleObject(result.payload));
 });
 
-unityRoutes.post("/save-scene", (_req, res) => {
-  sendUnityResponse(res, unityClient.saveScene());
+unityRoutes.post("/save-scene", async (_req, res) => {
+  sendUnityResponse(res, await unityClient.saveScene());
 });

@@ -115,3 +115,115 @@ backend/src/unityClient.ts
 
 That file returns mock success responses today. Later, it can be replaced with
 real Unity MCP calls without changing the frontend or route names.
+
+## Real Unity/MCP milestone: Add cube
+
+Mock mode remains the default. Real Unity/MCP mode currently implements only one
+real action: clicking **Add cube** calls Unity through MCP and adds a cube to the
+currently open Unity scene.
+
+The current integration targets the public CoderGamester MCP Unity bridge:
+
+```text
+https://github.com/CoderGamester/mcp-unity
+```
+
+The verified MCP tool contract for this milestone is:
+
+```text
+tool: execute_menu_item
+argument: menuPath
+value: GameObject/3D Object/Cube
+```
+
+### 1. Install the Unity package
+
+In the open `UnityMCPDemo` Unity project:
+
+```text
+Window > Package Manager > + > Add package from git URL...
+```
+
+Use this Git URL:
+
+```text
+https://github.com/CoderGamester/mcp-unity.git
+```
+
+Unity will add it to the project through `UnityMCPDemo/Packages/manifest.json`.
+
+### 2. Start the Unity MCP server window
+
+In Unity:
+
+```text
+Tools > MCP Unity > Server Window
+```
+
+Click:
+
+```text
+Start Server
+```
+
+The default WebSocket port is:
+
+```text
+8090
+```
+
+### 3. Clone and build the MCP Node server
+
+In Terminal:
+
+```bash
+mkdir -p ~/Developer
+cd ~/Developer
+git clone https://github.com/CoderGamester/mcp-unity.git
+cd mcp-unity/Server~
+npm install
+npm run build
+```
+
+### 4. Run this app backend in MCP mode
+
+In this repository:
+
+```bash
+cd backend
+UNITY_CLIENT_MODE=mcp \
+UNITY_MCP_SERVER_COMMAND=node \
+UNITY_MCP_SERVER_ARGS="$HOME/Developer/mcp-unity/Server~/build/index.js" \
+UNITY_MCP_ADD_CUBE_TOOL=execute_menu_item \
+UNITY_MCP_ADD_CUBE_ARG_NAME=menuPath \
+UNITY_MCP_ADD_CUBE_MENU_PATH="GameObject/3D Object/Cube" \
+UNITY_PORT=8090 \
+npm run dev
+```
+
+If your Unity MCP Server Window uses a different WebSocket port, set
+`UNITY_PORT` to that value before running the backend.
+
+### 5. Run the frontend
+
+In a second terminal:
+
+```bash
+cd frontend
+npm run dev
+```
+
+Open:
+
+```text
+http://127.0.0.1:5173
+```
+
+Click **Add cube**. A cube should appear in the currently open
+`UnityMCPDemo` scene.
+
+### MCP mode limitations
+
+Only **Add cube** is real in MCP mode right now. The other buttons still exist
+in the UI, but the backend will return a clear unsupported-action error for
+them. Mock mode continues to support the full mock workflow.

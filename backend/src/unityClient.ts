@@ -1,186 +1,53 @@
+import { unityConfig } from "./config.js";
+import { mcpUnityClient } from "./mcpUnityClient.js";
+import { mockUnityClient } from "./mockUnityClient.js";
 import type {
-  MockObject,
-  MockObjectType,
-  MockSceneState,
   ObjectTransformPayload,
   UnityAction,
   UnityActionErrorResponse,
-  UnityActionResponse,
-  UnityActionSuccessResponse
+  UnityActionResponse
 } from "./types.js";
 
-const defaultPosition = { x: 0, y: 0, z: 0 };
-const defaultScale = { x: 1, y: 1, z: 1 };
-const sceneRequiredError = "Create a scene before performing this action.";
-
-const state: MockSceneState = {
-  sceneCreated: false,
-  objects: []
-};
-
-const mockSuccess = (
-  action: UnityAction,
-  message: string,
-  data?: unknown
-): UnityActionSuccessResponse => ({
-  ok: true,
-  mode: "mock",
-  action,
-  message,
-  ...(data ? { data } : {})
-});
-
-const mockError = (
-  error: string,
-  details?: string[]
-): UnityActionErrorResponse => ({
+const mcpUnsupported = (action: UnityAction): UnityActionErrorResponse => ({
   ok: false,
-  error,
-  ...(details?.length ? { details } : {})
+  error: "Real Unity/MCP mode currently supports only Add cube.",
+  details: [`Unsupported action in MCP mode: ${action}`]
 });
 
-const cloneState = (): MockSceneState => ({
-  sceneCreated: state.sceneCreated,
-  objects: state.objects.map((object) => ({
-    ...object,
-    position: { ...object.position },
-    scale: { ...object.scale }
-  }))
-});
-
-const ensureScene = (): UnityActionErrorResponse | undefined => {
-  if (!state.sceneCreated) {
-    return mockError(sceneRequiredError);
-  }
-
-  return undefined;
-};
-
-const findObject = (name: string): MockObject | undefined =>
-  state.objects.find((object) => object.name === name);
-
-const nextObjectName = (baseName: string): string => {
-  if (!findObject(baseName)) {
-    return baseName;
-  }
-
-  let index = 2;
-  while (findObject(`${baseName}_${index}`)) {
-    index += 1;
-  }
-
-  return `${baseName}_${index}`;
-};
-
-const addObject = (
-  action: UnityAction,
-  baseName: string,
-  type: MockObjectType
-): UnityActionResponse => {
-  const sceneError = ensureScene();
-  if (sceneError) {
-    return sceneError;
-  }
-
-  const object: MockObject = {
-    name: nextObjectName(baseName),
-    type,
-    position: { ...defaultPosition },
-    scale: { ...defaultScale }
-  };
-
-  state.objects.push(object);
-
-  return mockSuccess(action, `Mock ${baseName.toLowerCase()} added as ${object.name}.`, {
-    object,
-    state: cloneState()
-  });
-};
+const isMcpMode = (): boolean => unityConfig.mode === "mcp";
 
 export const unityClient = {
   hasScene(): boolean {
-    return state.sceneCreated;
+    return isMcpMode() || mockUnityClient.hasScene();
   },
 
-  createScene(): UnityActionSuccessResponse {
-    state.sceneCreated = true;
-    state.objects = [];
-
-    return mockSuccess("createScene", "Mock scene created successfully.", {
-      state: cloneState()
-    });
+  createScene(): UnityActionResponse {
+    return isMcpMode() ? mcpUnsupported("createScene") : mockUnityClient.createScene();
   },
 
-  addCube(): UnityActionResponse {
-    return addObject("addCube", "Cube", "cube");
+  addCube(): Promise<UnityActionResponse> | UnityActionResponse {
+    return isMcpMode() ? mcpUnityClient.addCube() : mockUnityClient.addCube();
   },
 
   addSphere(): UnityActionResponse {
-    return addObject("addSphere", "Sphere", "sphere");
+    return isMcpMode() ? mcpUnsupported("addSphere") : mockUnityClient.addSphere();
   },
 
   addLight(): UnityActionResponse {
-    return addObject("addLight", "Light", "light");
+    return isMcpMode() ? mcpUnsupported("addLight") : mockUnityClient.addLight();
   },
 
   moveObject(payload: ObjectTransformPayload): UnityActionResponse {
-    const sceneError = ensureScene();
-    if (sceneError) {
-      return sceneError;
-    }
-
-    const object = findObject(payload.objectName);
-    if (!object) {
-      return mockError("Invalid move object request.", [
-        `Object "${payload.objectName}" does not exist in the mock scene.`
-      ]);
-    }
-
-    object.position = { ...payload.coordinates };
-
-    return mockSuccess(
-      "moveObject",
-      `Mock moved ${payload.objectName} to (${payload.coordinates.x}, ${payload.coordinates.y}, ${payload.coordinates.z}).`,
-      {
-        object,
-        state: cloneState()
-      }
-    );
+    return isMcpMode() ? mcpUnsupported("moveObject") : mockUnityClient.moveObject(payload);
   },
 
   scaleObject(payload: ObjectTransformPayload): UnityActionResponse {
-    const sceneError = ensureScene();
-    if (sceneError) {
-      return sceneError;
-    }
-
-    const object = findObject(payload.objectName);
-    if (!object) {
-      return mockError("Invalid scale object request.", [
-        `Object "${payload.objectName}" does not exist in the mock scene.`
-      ]);
-    }
-
-    object.scale = { ...payload.coordinates };
-
-    return mockSuccess(
-      "scaleObject",
-      `Mock scaled ${payload.objectName} to (${payload.coordinates.x}, ${payload.coordinates.y}, ${payload.coordinates.z}).`,
-      {
-        object,
-        state: cloneState()
-      }
-    );
+    return isMcpMode()
+      ? mcpUnsupported("scaleObject")
+      : mockUnityClient.scaleObject(payload);
   },
 
   saveScene(): UnityActionResponse {
-    const sceneError = ensureScene();
-    if (sceneError) {
-      return sceneError;
-    }
-
-    return mockSuccess("saveScene", "Mock scene saved successfully.", {
-      state: cloneState()
-    });
+    return isMcpMode() ? mcpUnsupported("saveScene") : mockUnityClient.saveScene();
   }
 };

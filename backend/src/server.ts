@@ -1,9 +1,9 @@
 import express from "express";
+import { isMcpConfigured, unityConfig } from "./config.js";
 import { unityRoutes } from "./routes/unityRoutes.js";
 
 const app = express();
-const parsedPort = Number(process.env.PORT);
-const port = Number.isInteger(parsedPort) && parsedPort > 0 ? parsedPort : 3001;
+const port = unityConfig.port;
 
 app.use(express.json());
 
@@ -11,7 +11,15 @@ app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
     service: "unity-mcp-controller-backend",
-    mode: "mock"
+    mode: unityConfig.mode,
+    mcp: {
+      configured: isMcpConfigured(),
+      serverCommand: unityConfig.mcp.serverCommand,
+      serverArgsConfigured: unityConfig.mcp.serverArgs.length > 0,
+      addCubeTool: unityConfig.mcp.addCubeTool,
+      addCubeArgumentName: unityConfig.mcp.addCubeArgumentName,
+      addCubeMenuPath: unityConfig.mcp.addCubeMenuPath
+    }
   });
 });
 

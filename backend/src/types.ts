@@ -25,6 +25,8 @@ export interface MockSceneState {
   objects: MockObject[];
 }
 
+export type UnityClientMode = "mock" | "mcp";
+
 export type UnityAction =
   | "createScene"
   | "addCube"
@@ -36,7 +38,7 @@ export type UnityAction =
 
 export interface UnityActionSuccessResponse {
   ok: true;
-  mode: "mock";
+  mode: UnityClientMode;
   action: UnityAction;
   message: string;
   data?: unknown;
