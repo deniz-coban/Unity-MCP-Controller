@@ -11,6 +11,14 @@ const parsePositiveInteger = (
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const parsePositiveNumber = (
+  value: string | undefined,
+  fallback: number
+): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
 const parseArgs = (value: string | undefined): string[] => {
   if (!value?.trim()) {
     return [];
@@ -34,6 +42,8 @@ const parseArgs = (value: string | undefined): string[] => {
 export const unityConfig = {
   mode: parseMode(process.env.UNITY_CLIENT_MODE),
   port: parsePositiveInteger(process.env.PORT, 3001),
+  unityProjectPath: process.env.UNITY_PROJECT_PATH?.trim() || undefined,
+  modelUploadMaxMb: parsePositiveNumber(process.env.MODEL_UPLOAD_MAX_MB, 50),
   mcp: {
     serverCommand: process.env.UNITY_MCP_SERVER_COMMAND ?? "node",
     serverArgs: parseArgs(process.env.UNITY_MCP_SERVER_ARGS),

@@ -26,6 +26,21 @@ const requestJson = async <T>(
   return body;
 };
 
+const requestForm = async <T>(path: string, formData: FormData): Promise<T> => {
+  const response = await fetch(path, {
+    method: "POST",
+    body: formData
+  });
+
+  const body = (await response.json()) as T;
+
+  if (!response.ok) {
+    throw body;
+  }
+
+  return body;
+};
+
 export const api = {
   health(): Promise<HealthResponse> {
     return requestJson<HealthResponse>("/api/health");
@@ -48,6 +63,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload)
     });
+  },
+
+  importModel(formData: FormData): Promise<UnityActionResponse> {
+    return requestForm<UnityActionResponse>("/api/unity/import-model", formData);
   },
 
   addSphere(): Promise<UnityActionResponse> {

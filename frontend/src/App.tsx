@@ -37,6 +37,25 @@ const defaultCreateObjectValues = {
   positionX: "0",
   positionY: "0",
   positionZ: "0",
+  rotationX: "0",
+  rotationY: "0",
+  rotationZ: "0",
+  uniformScale: "1",
+  scaleX: "1",
+  scaleY: "1",
+  scaleZ: "1"
+};
+
+const defaultImportModelValues = {
+  file: null as File | null,
+  name: "Model",
+  positionX: "0",
+  positionY: "0",
+  positionZ: "0",
+  rotationX: "0",
+  rotationY: "0",
+  rotationZ: "0",
+  uniformScale: "1",
   scaleX: "1",
   scaleY: "1",
   scaleZ: "1"
@@ -50,6 +69,8 @@ const objectTypeOptions: Array<{ value: UnityDefaultObjectType; label: string }>
   { value: "plane", label: "Plane" },
   { value: "quad", label: "Quad" }
 ];
+
+const scalePresets = ["0.01", "0.1", "1", "10", "100", "1000"];
 
 const getDefaultCreateObjectValues = (type: UnityDefaultObjectType) => {
   const option = objectTypeOptions.find((item) => item.value === type);
@@ -120,6 +141,11 @@ const parseCreateObject = (
     y: Number(values.positionY),
     z: Number(values.positionZ)
   };
+  const rotation = {
+    x: Number(values.rotationX),
+    y: Number(values.rotationY),
+    z: Number(values.rotationZ)
+  };
   const scale = {
     x: Number(values.scaleX),
     y: Number(values.scaleY),
@@ -139,6 +165,14 @@ const parseCreateObject = (
   }
 
   if (
+    !Number.isFinite(rotation.x) ||
+    !Number.isFinite(rotation.y) ||
+    !Number.isFinite(rotation.z)
+  ) {
+    return "Rotation values must be valid numbers.";
+  }
+
+  if (
     !Number.isFinite(scale.x) ||
     !Number.isFinite(scale.y) ||
     !Number.isFinite(scale.z)
@@ -154,8 +188,91 @@ const parseCreateObject = (
     type: values.type,
     name,
     position,
+    rotation,
     scale
   };
+};
+
+const fileNameToObjectName = (fileName: string): string => {
+  const withoutExtension = fileName.replace(/\.[^/.]+$/, "");
+  const cleaned = withoutExtension.replace(/[^a-zA-Z0-9._-]+/g, "_");
+  return cleaned || "Model";
+};
+
+const buildImportModelFormData = (
+  values: typeof defaultImportModelValues
+): FormData | string => {
+  const name = values.name.trim();
+  const position = {
+    x: Number(values.positionX),
+    y: Number(values.positionY),
+    z: Number(values.positionZ)
+  };
+  const rotation = {
+    x: Number(values.rotationX),
+    y: Number(values.rotationY),
+    z: Number(values.rotationZ)
+  };
+  const scale = {
+    x: Number(values.scaleX),
+    y: Number(values.scaleY),
+    z: Number(values.scaleZ)
+  };
+
+  if (!values.file) {
+    return "Model file is required.";
+  }
+
+  if (!name) {
+    return "Object name is required.";
+  }
+
+  if (!/\.(fbx|obj)$/i.test(values.file.name)) {
+    return "Model file must be an .fbx or .obj file.";
+  }
+
+  if (
+    !Number.isFinite(position.x) ||
+    !Number.isFinite(position.y) ||
+    !Number.isFinite(position.z)
+  ) {
+    return "Position values must be valid numbers.";
+  }
+
+  if (
+    !Number.isFinite(rotation.x) ||
+    !Number.isFinite(rotation.y) ||
+    !Number.isFinite(rotation.z)
+  ) {
+    return "Rotation values must be valid numbers.";
+  }
+
+  if (
+    !Number.isFinite(scale.x) ||
+    !Number.isFinite(scale.y) ||
+    !Number.isFinite(scale.z)
+  ) {
+    return "Scale values must be valid numbers.";
+  }
+
+  if (scale.x <= 0 || scale.y <= 0 || scale.z <= 0) {
+    return "Scale values must be greater than 0.";
+  }
+
+  const formData = new FormData();
+  formData.append("model", values.file);
+  formData.append("name", name);
+  formData.append("positionX", String(position.x));
+  formData.append("positionY", String(position.y));
+  formData.append("positionZ", String(position.z));
+  formData.append("rotationX", String(rotation.x));
+  formData.append("rotationY", String(rotation.y));
+  formData.append("rotationZ", String(rotation.z));
+  formData.append("scaleX", String(scale.x));
+  formData.append("scaleY", String(scale.y));
+  formData.append("scaleZ", String(scale.z));
+
+  return formData;
 };
 
 export default function App() {
@@ -164,6 +281,9 @@ export default function App() {
   const [isBusy, setIsBusy] = useState(false);
   const [createObjectValues, setCreateObjectValues] = useState(
     defaultCreateObjectValues
+  );
+  const [importModelValues, setImportModelValues] = useState(
+    defaultImportModelValues
   );
   const [moveValues, setMoveValues] = useState(defaultTransform);
   const [scaleValues, setScaleValues] = useState(defaultScaleTransform);
@@ -191,7 +311,7 @@ export default function App() {
   const isMcpMode = backendMode === "mcp";
   const modeEyebrow = isMcpMode ? "UNITY MCP MODE" : "LOCAL MOCK MODE";
   const sceneActionSubtitle = isMcpMode
-    ? "Connected through Unity MCP. Default object creation is enabled."
+    ? "Connected through Unity MCP. Default object and model creation are enabled."
     : "Mock responses only. No Unity or MCP connection is active.";
   const mcpOnlyDisabled = isBusy || isMcpMode;
 
@@ -288,6 +408,23 @@ export default function App() {
     }
 
     void runAction("Create object", () => api.createObject(payload));
+  };
+
+  const submitImportModel = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    const formData = buildImportModelFormData(importModelValues);
+
+    if (typeof formData === "string") {
+      addLog({
+        tone: "error",
+        title: "Add model failed",
+        details: [formData]
+      });
+      return;
+    }
+
+    void runAction("Add model", () => api.importModel(formData));
   };
 
   return (
@@ -399,6 +536,26 @@ export default function App() {
               </div>
             </fieldset>
             <fieldset>
+              <legend>Rotation</legend>
+              <div className="coordinate-row">
+                {(["X", "Y", "Z"] as const).map((axis) => (
+                  <label key={axis}>
+                    {axis}
+                    <input
+                      value={createObjectValues[`rotation${axis}`]}
+                      onChange={(event) =>
+                        setCreateObjectValues((current) => ({
+                          ...current,
+                          [`rotation${axis}`]: event.target.value
+                        }))
+                      }
+                      inputMode="decimal"
+                    />
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            <fieldset>
               <legend>Scale</legend>
               <div className="coordinate-row">
                 {(["X", "Y", "Z"] as const).map((axis) => (
@@ -417,11 +574,214 @@ export default function App() {
                   </label>
                 ))}
               </div>
+              <div className="scale-tools">
+                <label>
+                  Uniform
+                  <input
+                    value={createObjectValues.uniformScale}
+                    onChange={(event) =>
+                      setCreateObjectValues((current) => ({
+                        ...current,
+                        uniformScale: event.target.value
+                      }))
+                    }
+                    inputMode="decimal"
+                  />
+                </label>
+                <button
+                  disabled={isBusy}
+                  onClick={() =>
+                    setCreateObjectValues((current) => ({
+                      ...current,
+                      scaleX: current.uniformScale,
+                      scaleY: current.uniformScale,
+                      scaleZ: current.uniformScale
+                    }))
+                  }
+                  type="button"
+                >
+                  Apply
+                </button>
+              </div>
+              <div className="scale-presets" aria-label="Scale presets">
+                {scalePresets.map((preset) => (
+                  <button
+                    disabled={isBusy}
+                    key={preset}
+                    onClick={() =>
+                      setCreateObjectValues((current) => ({
+                        ...current,
+                        uniformScale: preset,
+                        scaleX: preset,
+                        scaleY: preset,
+                        scaleZ: preset
+                      }))
+                    }
+                    type="button"
+                  >
+                    {preset}
+                  </button>
+                ))}
+              </div>
             </fieldset>
           </div>
         </div>
         <button disabled={isBusy} type="submit">
           Create object
+        </button>
+      </form>
+
+      <form className="panel" onSubmit={submitImportModel}>
+        <div className="panel-heading">
+          <h2>Import model</h2>
+          <p>Upload a small FBX or OBJ model and place it in the scene.</p>
+        </div>
+        <div className="field-stack">
+          <label>
+            Model file
+            <input
+              accept=".fbx,.obj"
+              onChange={(event) => {
+                const file = event.target.files?.[0] ?? null;
+                setImportModelValues((current) => ({
+                  ...current,
+                  file,
+                  name:
+                    file && (current.name.trim() === "" || current.name === "Model")
+                      ? fileNameToObjectName(file.name)
+                      : current.name
+                }));
+              }}
+              type="file"
+            />
+          </label>
+          <label>
+            Object name
+            <input
+              value={importModelValues.name}
+              onChange={(event) =>
+                setImportModelValues((current) => ({
+                  ...current,
+                  name: event.target.value
+                }))
+              }
+              placeholder="TestTree"
+            />
+          </label>
+          <div className="coordinate-groups">
+            <fieldset>
+              <legend>Position</legend>
+              <div className="coordinate-row">
+                {(["X", "Y", "Z"] as const).map((axis) => (
+                  <label key={axis}>
+                    {axis}
+                    <input
+                      value={importModelValues[`position${axis}`]}
+                      onChange={(event) =>
+                        setImportModelValues((current) => ({
+                          ...current,
+                          [`position${axis}`]: event.target.value
+                        }))
+                      }
+                      inputMode="decimal"
+                    />
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend>Rotation</legend>
+              <div className="coordinate-row">
+                {(["X", "Y", "Z"] as const).map((axis) => (
+                  <label key={axis}>
+                    {axis}
+                    <input
+                      value={importModelValues[`rotation${axis}`]}
+                      onChange={(event) =>
+                        setImportModelValues((current) => ({
+                          ...current,
+                          [`rotation${axis}`]: event.target.value
+                        }))
+                      }
+                      inputMode="decimal"
+                    />
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend>Scale</legend>
+              <div className="coordinate-row">
+                {(["X", "Y", "Z"] as const).map((axis) => (
+                  <label key={axis}>
+                    {axis}
+                    <input
+                      value={importModelValues[`scale${axis}`]}
+                      onChange={(event) =>
+                        setImportModelValues((current) => ({
+                          ...current,
+                          [`scale${axis}`]: event.target.value
+                        }))
+                      }
+                      inputMode="decimal"
+                    />
+                  </label>
+                ))}
+              </div>
+              <div className="scale-tools">
+                <label>
+                  Uniform
+                  <input
+                    value={importModelValues.uniformScale}
+                    onChange={(event) =>
+                      setImportModelValues((current) => ({
+                        ...current,
+                        uniformScale: event.target.value
+                      }))
+                    }
+                    inputMode="decimal"
+                  />
+                </label>
+                <button
+                  disabled={isBusy}
+                  onClick={() =>
+                    setImportModelValues((current) => ({
+                      ...current,
+                      scaleX: current.uniformScale,
+                      scaleY: current.uniformScale,
+                      scaleZ: current.uniformScale
+                    }))
+                  }
+                  type="button"
+                >
+                  Apply
+                </button>
+              </div>
+              <div className="scale-presets" aria-label="Scale presets">
+                {scalePresets.map((preset) => (
+                  <button
+                    disabled={isBusy}
+                    key={preset}
+                    onClick={() =>
+                      setImportModelValues((current) => ({
+                        ...current,
+                        uniformScale: preset,
+                        scaleX: preset,
+                        scaleY: preset,
+                        scaleZ: preset
+                      }))
+                    }
+                    type="button"
+                  >
+                    {preset}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+          </div>
+        </div>
+        <button disabled={isBusy} type="submit">
+          Add model
         </button>
       </form>
 

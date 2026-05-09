@@ -204,11 +204,43 @@ legend {
 .coordinate-groups {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
 form button {
   margin-top: 16px;
+  width: 100%;
+}
+
+.scale-tools {
+  align-items: end;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin-top: 12px;
+}
+
+.scale-tools button,
+.scale-presets button {
+  margin-top: 0;
+}
+
+.scale-tools button {
+  min-height: 42px;
+  width: auto;
+}
+
+.scale-presets {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  margin-top: 10px;
+}
+
+.scale-presets button {
+  font-size: 0.82rem;
+  min-height: 34px;
+  padding: 0 6px;
   width: 100%;
 }
 
@@ -262,6 +294,18 @@ form button {
   .forms-grid,
   .coordinate-groups {
     grid-template-columns: 1fr;
+  }
+
+  .scale-tools {
+    grid-template-columns: 1fr;
+  }
+
+  .scale-tools button {
+    width: 100%;
+  }
+
+  .scale-presets {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .top-bar {

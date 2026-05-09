@@ -1,12 +1,36 @@
 import { Response, Router } from "express";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import multer from "multer";
+import { unityConfig } from "../config.js";
 import { unityClient } from "../unityClient.js";
 import type { UnityActionResponse } from "../types.js";
 import {
   validateCreateObjectPayload,
+  validateImportModelPayload,
   validateTransformPayload
 } from "../validation.js";
 
 export const unityRoutes = Router();
+
+const uploadTempDir = path.join(os.tmpdir(), "unity-mcp-controller-uploads");
+const modelUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, callback) => {
+      fs.mkdirSync(uploadTempDir, { recursive: true });
+      callback(null, uploadTempDir);
+    },
+    filename: (_req, file, callback) => {
+      const extension = path.extname(file.originalname).toLowerCase();
+      const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      callback(null, `model-${suffix}${extension}`);
+    }
+  }),
+  limits: {
+    fileSize: Math.floor(unityConfig.modelUploadMaxMb * 1024 * 1024)
+  }
+});
 
 const sceneRequiredResponse = {
   ok: false,
@@ -56,6 +80,48 @@ unityRoutes.post("/create-object", async (req, res) => {
   }
 
   sendUnityResponse(res, await unityClient.createObject(result.payload));
+});
+
+unityRoutes.post("/import-model", (req, res) => {
+  modelUpload.single("model")(req, res, async (uploadError) => {
+    if (uploadError) {
+      const details =
+        uploadError instanceof multer.MulterError &&
+        uploadError.code === "LIMIT_FILE_SIZE"
+          ? [`Maximum upload size is ${unityConfig.modelUploadMaxMb} MB.`]
+          : [uploadError instanceof Error ? uploadError.message : String(uploadError)];
+
+      res.status(400).json({
+        ok: false,
+        error: "Invalid model upload.",
+        details
+      });
+      return;
+    }
+
+    try {
+      if (!ensureSceneCreated(res)) {
+        return;
+      }
+
+      const result = validateImportModelPayload(req.body, req.file);
+
+      if (!result.ok) {
+        res.status(400).json({
+          ok: false,
+          error: "Invalid import model request.",
+          details: result.details
+        });
+        return;
+      }
+
+      sendUnityResponse(res, await unityClient.importModel(result.payload));
+    } finally {
+      if (req.file?.path) {
+        fs.promises.unlink(req.file.path).catch(() => undefined);
+      }
+    }
+  });
 });
 
 unityRoutes.post("/add-sphere", async (_req, res) => {

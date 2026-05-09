@@ -3,6 +3,7 @@ import { mcpUnityClient } from "./mcpUnityClient.js";
 import { mockUnityClient } from "./mockUnityClient.js";
 import type {
   CreateObjectPayload,
+  ImportModelPayload,
   ObjectTransformPayload,
   UnityAction,
   UnityActionErrorResponse,
@@ -11,7 +12,7 @@ import type {
 
 const mcpUnsupported = (action: UnityAction): UnityActionErrorResponse => ({
   ok: false,
-  error: "Real Unity/MCP mode currently supports only Add cube.",
+  error: "Real Unity/MCP mode does not support this action yet.",
   details: [`Unsupported action in MCP mode: ${action}`]
 });
 
@@ -34,6 +35,12 @@ export const unityClient = {
     return isMcpMode()
       ? mcpUnityClient.createObject(payload)
       : mockUnityClient.createObject(payload);
+  },
+
+  importModel(payload: ImportModelPayload): Promise<UnityActionResponse> | UnityActionResponse {
+    return isMcpMode()
+      ? mcpUnityClient.importModel(payload)
+      : mockUnityClient.importModel(payload);
   },
 
   addSphere(): UnityActionResponse {

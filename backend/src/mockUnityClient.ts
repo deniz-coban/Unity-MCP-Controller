@@ -3,6 +3,7 @@ import type {
   MockObjectType,
   MockSceneState,
   CreateObjectPayload,
+  ImportModelPayload,
   ObjectTransformPayload,
   UnityAction,
   UnityActionErrorResponse,
@@ -11,6 +12,7 @@ import type {
 } from "./types.js";
 
 const defaultPosition = { x: 0, y: 0, z: 0 };
+const defaultRotation = { x: 0, y: 0, z: 0 };
 const defaultScale = { x: 1, y: 1, z: 1 };
 const sceneRequiredError = "Create a scene before performing this action.";
 
@@ -45,6 +47,7 @@ const cloneState = (): MockSceneState => ({
   objects: state.objects.map((object) => ({
     ...object,
     position: { ...object.position },
+    rotation: { ...object.rotation },
     scale: { ...object.scale }
   }))
 });
@@ -87,6 +90,7 @@ const addObject = (
     name: nextObjectName(baseName),
     type,
     position: { ...defaultPosition },
+    rotation: { ...defaultRotation },
     scale: { ...defaultScale }
   };
 
@@ -113,6 +117,7 @@ const createObject = (
     name: finalName,
     type: payload.type,
     position: { ...payload.position },
+    rotation: { ...payload.rotation },
     scale: { ...payload.scale }
   };
 
@@ -149,6 +154,7 @@ export const mockUnityClient = {
         type: "cube",
         name: nextObjectName("Cube"),
         position: { ...defaultPosition },
+        rotation: { ...defaultRotation },
         scale: { ...defaultScale }
       },
       "addCube"
@@ -157,6 +163,35 @@ export const mockUnityClient = {
 
   createObject(payload: CreateObjectPayload): UnityActionResponse {
     return createObject(payload);
+  },
+
+  importModel(payload: ImportModelPayload): UnityActionResponse {
+    const sceneError = ensureScene();
+    if (sceneError) {
+      return sceneError;
+    }
+
+    const finalName = nextObjectName(payload.name);
+    const object: MockObject = {
+      name: finalName,
+      type: "model",
+      position: { ...payload.position },
+      rotation: { ...payload.rotation },
+      scale: { ...payload.scale }
+    };
+
+    state.objects.push(object);
+
+    return mockSuccess("importModel", `Mock model imported as ${finalName}.`, {
+      object,
+      requestedName: payload.name,
+      file: {
+        originalName: payload.file.originalName,
+        extension: payload.file.extension,
+        sizeBytes: payload.file.sizeBytes
+      },
+      state: cloneState()
+    });
   },
 
   addSphere(): UnityActionResponse {

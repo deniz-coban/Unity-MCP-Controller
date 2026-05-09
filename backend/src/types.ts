@@ -23,15 +23,34 @@ export interface CreateObjectPayload {
   type: UnityDefaultObjectType;
   name: string;
   position: Vector3;
+  rotation: Vector3;
   scale: Vector3;
 }
 
-export type MockObjectType = UnityDefaultObjectType | "light";
+export type ModelFileExtension = ".fbx" | ".obj";
+
+export interface UploadedModelFile {
+  originalName: string;
+  tempPath: string;
+  sizeBytes: number;
+  extension: ModelFileExtension;
+}
+
+export interface ImportModelPayload {
+  name: string;
+  position: Vector3;
+  rotation: Vector3;
+  scale: Vector3;
+  file: UploadedModelFile;
+}
+
+export type MockObjectType = UnityDefaultObjectType | "light" | "model";
 
 export interface MockObject {
   name: string;
   type: MockObjectType;
   position: Vector3;
+  rotation: Vector3;
   scale: Vector3;
 }
 
@@ -45,6 +64,7 @@ export type UnityClientMode = "mock" | "mcp";
 export type UnityAction =
   | "createScene"
   | "createObject"
+  | "importModel"
   | "addCube"
   | "addSphere"
   | "addLight"

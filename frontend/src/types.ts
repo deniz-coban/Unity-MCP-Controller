@@ -21,12 +21,14 @@ export interface CreateObjectPayload {
   type: UnityDefaultObjectType;
   name: string;
   position: Vector3;
+  rotation: Vector3;
   scale: Vector3;
 }
 
 export type UnityAction =
   | "createScene"
   | "createObject"
+  | "importModel"
   | "addCube"
   | "addSphere"
   | "addLight"

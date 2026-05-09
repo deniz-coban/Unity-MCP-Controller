@@ -222,8 +222,51 @@ http://127.0.0.1:5173
 Click **Add cube**. A cube should appear in the currently open
 `UnityMCPDemo` scene.
 
+### Model import
+
+MCP mode can import simple Unity-compatible model files into the open scene.
+The first supported formats are:
+
+```text
+.fbx
+.obj
+```
+
+Do not use `.glb`, `.gltf`, `.blend`, `.zip`, texture folders, material folders,
+or animated model workflows yet. OBJ material and texture sidecars are not fully
+supported in this first version, so test with small FBX files first.
+
+Set the Unity project path when running the backend in MCP mode:
+
+```bash
+UNITY_PROJECT_PATH=/Users/deniz/Desktop/UnityMCPDemo
+```
+
+The backend copies uploaded model files into:
+
+```text
+<UNITY_PROJECT_PATH>/Assets/ImportedModels
+```
+
+The folder is created automatically if it does not exist. Uploads are limited by
+`MODEL_UPLOAD_MAX_MB`, which defaults to `50`.
+
+Example MCP backend command with model import enabled:
+
+```bash
+cd backend
+UNITY_CLIENT_MODE=mcp \
+UNITY_MCP_SERVER_COMMAND=node \
+UNITY_MCP_SERVER_ARGS="$HOME/Developer/mcp-unity/Server~/build/index.js" \
+UNITY_PROJECT_PATH=/Users/deniz/Desktop/UnityMCPDemo \
+MODEL_UPLOAD_MAX_MB=50 \
+UNITY_PORT=8090 \
+npm run dev
+```
+
 ### MCP mode limitations
 
-Only **Add cube** is real in MCP mode right now. The other buttons still exist
-in the UI, but the backend will return a clear unsupported-action error for
-them. Mock mode continues to support the full mock workflow.
+Default object creation and simple FBX/OBJ model import are real in MCP mode.
+The older individual buttons for actions that have not been implemented in MCP
+mode still return clear unsupported-action errors or are disabled in the UI.
+Mock mode continues to support the mock workflow.

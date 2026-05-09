@@ -18,7 +18,9 @@ app.get("/api/health", (_req, res) => {
       serverArgsConfigured: unityConfig.mcp.serverArgs.length > 0,
       addCubeTool: unityConfig.mcp.addCubeTool,
       addCubeArgumentName: unityConfig.mcp.addCubeArgumentName,
-      addCubeMenuPath: unityConfig.mcp.addCubeMenuPath
+      addCubeMenuPath: unityConfig.mcp.addCubeMenuPath,
+      unityProjectPathConfigured: Boolean(unityConfig.unityProjectPath),
+      modelUploadMaxMb: unityConfig.modelUploadMaxMb
     }
   });
 });
