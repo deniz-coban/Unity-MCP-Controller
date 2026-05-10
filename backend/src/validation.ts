@@ -2,6 +2,7 @@ import type {
   ColorRGBA,
   CreateLightPayload,
   CreateObjectPayload,
+  EditObjectPayload,
   EditTransformPayload,
   ImportModelPayload,
   ModelFileExtension,
@@ -92,6 +93,16 @@ const parseHexColor = (value: unknown): ColorRGBA | undefined => {
     b: readChannel(4),
     a: hex.length === 8 ? readChannel(6) : 1
   };
+};
+
+const colorToHex = (color: ColorRGBA): string => {
+  const toHex = (value: number): string => {
+    const normalized = Math.max(0, Math.min(255, Math.round(value * 255)));
+    return normalized.toString(16).padStart(2, "0");
+  };
+
+  const alpha = color.a < 1 ? toHex(color.a) : "";
+  return `#${toHex(color.r)}${toHex(color.g)}${toHex(color.b)}${alpha}`;
 };
 
 const validateVector3 = (
@@ -611,6 +622,148 @@ export const validateEditTransformPayload = (
       position,
       rotation,
       scale
+    }
+  };
+};
+
+export const validateSceneObjectInstanceIdParam = (
+  value: unknown
+): { ok: true; instanceId: number } | { ok: false; details: string[] } => {
+  const parsed = parseFiniteNumber(value);
+
+  if (parsed === undefined || !Number.isInteger(parsed)) {
+    return { ok: false, details: ["instanceId must be an integer."] };
+  }
+
+  return { ok: true, instanceId: parsed };
+};
+
+export const validateEditObjectPayload = (
+  body: unknown
+): { ok: true; payload: EditObjectPayload } | { ok: false; details: string[] } => {
+  const details: string[] = [];
+
+  if (!isRecord(body)) {
+    return { ok: false, details: ["Request body must be a JSON object."] };
+  }
+
+  const instanceId = parseFiniteNumber(body.instanceId);
+  if (instanceId === undefined || !Number.isInteger(instanceId)) {
+    details.push("instanceId must be an integer.");
+  }
+
+  if (body.name !== undefined) {
+    if (typeof body.name !== "string" || body.name.trim().length === 0) {
+      details.push("name must be non-empty when provided.");
+    }
+  }
+
+  const position = validateVector3(
+    body.position,
+    "position",
+    { requirePositive: false },
+    details
+  );
+  const rotation = validateVector3(
+    body.rotation,
+    "rotation",
+    { requirePositive: false },
+    details
+  );
+  const scale = validateVector3(
+    body.scale,
+    "scale",
+    { requirePositive: true },
+    details
+  );
+
+  let light: EditObjectPayload["light"] | undefined;
+
+  if (body.light !== undefined) {
+    if (!isRecord(body.light)) {
+      details.push("light must be an object when provided.");
+    } else {
+      light = {};
+
+      if (body.light.intensity !== undefined) {
+        const intensity = parseFiniteNumber(body.light.intensity);
+        if (intensity === undefined) {
+          details.push("light.intensity must be a finite number.");
+        } else if (intensity < 0) {
+          details.push("light.intensity must be greater than or equal to 0.");
+        } else {
+          light.intensity = intensity;
+        }
+      }
+
+      if (body.light.range !== undefined) {
+        const range = parseFiniteNumber(body.light.range);
+        if (range === undefined) {
+          details.push("light.range must be a finite number.");
+        } else if (range <= 0) {
+          details.push("light.range must be greater than 0.");
+        } else {
+          light.range = range;
+        }
+      }
+
+      if (body.light.spotAngle !== undefined) {
+        const spotAngle = parseFiniteNumber(body.light.spotAngle);
+        if (spotAngle === undefined) {
+          details.push("light.spotAngle must be a finite number.");
+        } else if (spotAngle <= 0 || spotAngle > 179) {
+          details.push("light.spotAngle must be greater than 0 and less than or equal to 179.");
+        } else {
+          light.spotAngle = spotAngle;
+        }
+      }
+
+      if (body.light.color !== undefined) {
+        const color = parseHexColor(body.light.color);
+        if (!color) {
+          details.push("light.color must be #RRGGBB or #RRGGBBAA.");
+        } else {
+          light.color = color;
+          light.colorHex = (body.light.color as string).trim();
+        }
+      } else if (body.light.colorHex !== undefined) {
+        const color = parseHexColor(body.light.colorHex);
+        if (!color) {
+          details.push("light.colorHex must be #RRGGBB or #RRGGBBAA.");
+        } else {
+          light.color = color;
+          light.colorHex = (body.light.colorHex as string).trim();
+        }
+      }
+
+      if (Object.keys(light).length === 0) {
+        light = undefined;
+      } else if (light.color && !light.colorHex) {
+        light.colorHex = colorToHex(light.color);
+      }
+    }
+  }
+
+  if (
+    details.length > 0 ||
+    instanceId === undefined ||
+    !Number.isInteger(instanceId) ||
+    !position ||
+    !rotation ||
+    !scale
+  ) {
+    return { ok: false, details };
+  }
+
+  return {
+    ok: true,
+    payload: {
+      instanceId,
+      ...(typeof body.name === "string" ? { name: body.name.trim() } : {}),
+      position,
+      rotation,
+      scale,
+      ...(light ? { light } : {})
     }
   };
 };

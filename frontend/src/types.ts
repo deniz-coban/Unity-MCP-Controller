@@ -17,6 +17,13 @@ export interface EditTransformPayload {
 }
 
 export type UnityLightType = "directional" | "point" | "spot";
+export type SceneObjectCategory =
+  | "light"
+  | "renderer"
+  | "camera"
+  | "generic"
+  | "model"
+  | "primitive";
 
 export interface CreateLightPayload {
   type: UnityLightType;
@@ -25,6 +32,58 @@ export interface CreateLightPayload {
   rotation: Vector3;
   intensity: number;
   color: string;
+}
+
+export interface SceneObjectLightDetails {
+  lightType?: UnityLightType;
+  color: Vector4Color;
+  colorHex: string;
+  intensity: number;
+  range?: number;
+  spotAngle?: number;
+}
+
+export interface Vector4Color {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+}
+
+export interface SceneObjectSummary {
+  name: string;
+  instanceId: number;
+  path: string;
+  sceneName?: string;
+  sceneFilePath?: string;
+  scenePath?: string;
+  componentTypes: string[];
+  hasLight: boolean;
+  hasRenderer: boolean;
+  hasCamera: boolean;
+  category: SceneObjectCategory;
+  displayName: string;
+}
+
+export interface SceneObjectDetails extends SceneObjectSummary {
+  position: Vector3;
+  rotation: Vector3;
+  scale: Vector3;
+  light?: SceneObjectLightDetails;
+}
+
+export interface EditObjectPayload {
+  instanceId: number;
+  name: string;
+  position: Vector3;
+  rotation: Vector3;
+  scale: Vector3;
+  light?: {
+    color?: string;
+    intensity?: number;
+    range?: number;
+    spotAngle?: number;
+  };
 }
 
 export type UnityDefaultObjectType =
@@ -48,6 +107,9 @@ export type UnityAction =
   | "createObject"
   | "createLight"
   | "importModel"
+  | "listSceneObjects"
+  | "getSceneObject"
+  | "editObject"
   | "addCube"
   | "addSphere"
   | "addLight"

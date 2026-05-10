@@ -10,8 +10,10 @@ import {
   validateCreateLightPayload,
   validateCreateObjectMultipartPayload,
   validateCreateObjectPayload,
+  validateEditObjectPayload,
   validateEditTransformPayload,
   validateImportModelPayload,
+  validateSceneObjectInstanceIdParam,
   validateTransformPayload
 } from "../validation.js";
 
@@ -132,6 +134,33 @@ unityRoutes.post("/create-scene", async (_req, res) => {
 
 unityRoutes.post("/add-cube", async (_req, res) => {
   sendUnityResponse(res, await unityClient.addCube());
+});
+
+unityRoutes.get("/scene-objects", async (_req, res) => {
+  if (!ensureSceneCreated(res)) {
+    return;
+  }
+
+  sendUnityResponse(res, await unityClient.listSceneObjects());
+});
+
+unityRoutes.get("/scene-objects/:instanceId", async (req, res) => {
+  if (!ensureSceneCreated(res)) {
+    return;
+  }
+
+  const result = validateSceneObjectInstanceIdParam(req.params.instanceId);
+
+  if (!result.ok) {
+    res.status(400).json({
+      ok: false,
+      error: "Invalid scene object request.",
+      details: result.details
+    });
+    return;
+  }
+
+  sendUnityResponse(res, await unityClient.getSceneObject(result.instanceId));
 });
 
 unityRoutes.post("/create-object", async (req, res) => {
@@ -312,6 +341,25 @@ unityRoutes.post("/edit-transform", async (req, res) => {
   }
 
   sendUnityResponse(res, await unityClient.editTransform(result.payload));
+});
+
+unityRoutes.post("/edit-object", async (req, res) => {
+  if (!ensureSceneCreated(res)) {
+    return;
+  }
+
+  const result = validateEditObjectPayload(req.body);
+
+  if (!result.ok) {
+    res.status(400).json({
+      ok: false,
+      error: "Invalid edit object request.",
+      details: result.details
+    });
+    return;
+  }
+
+  sendUnityResponse(res, await unityClient.editObject(result.payload));
 });
 
 unityRoutes.post("/save-scene", async (_req, res) => {

@@ -4,6 +4,7 @@ import { mockUnityClient } from "./mockUnityClient.js";
 import type {
   CreateLightPayload,
   CreateObjectPayload,
+  EditObjectPayload,
   EditTransformPayload,
   ImportModelPayload,
   ObjectTransformPayload,
@@ -31,6 +32,18 @@ export const unityClient = {
 
   addCube(): Promise<UnityActionResponse> | UnityActionResponse {
     return isMcpMode() ? mcpUnityClient.addCube() : mockUnityClient.addCube();
+  },
+
+  listSceneObjects(): Promise<UnityActionResponse> | UnityActionResponse {
+    return isMcpMode()
+      ? mcpUnityClient.listSceneObjects()
+      : mockUnityClient.listSceneObjects();
+  },
+
+  getSceneObject(instanceId: number): Promise<UnityActionResponse> | UnityActionResponse {
+    return isMcpMode()
+      ? mcpUnityClient.getSceneObject(instanceId)
+      : mockUnityClient.getSceneObject(instanceId);
   },
 
   createObject(payload: CreateObjectPayload): Promise<UnityActionResponse> | UnityActionResponse {
@@ -73,6 +86,12 @@ export const unityClient = {
     return isMcpMode()
       ? mcpUnityClient.editTransform(payload)
       : mockUnityClient.editTransform(payload);
+  },
+
+  editObject(payload: EditObjectPayload): Promise<UnityActionResponse> | UnityActionResponse {
+    return isMcpMode()
+      ? mcpUnityClient.editObject(payload)
+      : mockUnityClient.editObject(payload);
   },
 
   saveScene(): Promise<UnityActionResponse> | UnityActionResponse {

@@ -35,6 +35,14 @@ export type UnityDefaultObjectType =
 
 export type UnityLightType = "directional" | "point" | "spot";
 
+export type SceneObjectCategory =
+  | "light"
+  | "renderer"
+  | "camera"
+  | "generic"
+  | "model"
+  | "primitive";
+
 export interface CreateObjectPayload {
   type: UnityDefaultObjectType;
   name: string;
@@ -91,11 +99,60 @@ export interface MockLightData {
   intensity: number;
   color: ColorRGBA;
   colorHex: string;
+  range?: number;
+  spotAngle?: number;
+}
+
+export interface SceneObjectLightDetails {
+  lightType?: UnityLightType;
+  color: ColorRGBA;
+  colorHex: string;
+  intensity: number;
+  range?: number;
+  spotAngle?: number;
+}
+
+export interface SceneObjectSummary {
+  name: string;
+  instanceId: number;
+  path: string;
+  sceneName?: string;
+  sceneFilePath?: string;
+  scenePath?: string;
+  componentTypes: string[];
+  hasLight: boolean;
+  hasRenderer: boolean;
+  hasCamera: boolean;
+  category: SceneObjectCategory;
+  displayName: string;
+}
+
+export interface SceneObjectDetails extends SceneObjectSummary {
+  position: Vector3;
+  rotation: Vector3;
+  scale: Vector3;
+  light?: SceneObjectLightDetails;
+}
+
+export interface EditObjectPayload {
+  instanceId: number;
+  name?: string;
+  position: Vector3;
+  rotation: Vector3;
+  scale: Vector3;
+  light?: {
+    color?: ColorRGBA;
+    colorHex?: string;
+    intensity?: number;
+    range?: number;
+    spotAngle?: number;
+  };
 }
 
 export type MockObjectType = UnityDefaultObjectType | "light" | "model";
 
 export interface MockObject {
+  instanceId: number;
   name: string;
   type: MockObjectType;
   position: Vector3;
@@ -117,6 +174,9 @@ export type UnityAction =
   | "createObject"
   | "createLight"
   | "importModel"
+  | "listSceneObjects"
+  | "getSceneObject"
+  | "editObject"
   | "addCube"
   | "addSphere"
   | "addLight"

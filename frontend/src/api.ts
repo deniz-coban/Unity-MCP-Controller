@@ -1,6 +1,7 @@
 import type {
   CreateLightPayload,
   CreateObjectPayload,
+  EditObjectPayload,
   EditTransformPayload,
   HealthResponse,
   ObjectTransformPayload,
@@ -60,6 +61,16 @@ export const api = {
     });
   },
 
+  sceneObjects(): Promise<UnityActionResponse> {
+    return requestJson<UnityActionResponse>("/api/unity/scene-objects");
+  },
+
+  sceneObject(instanceId: number): Promise<UnityActionResponse> {
+    return requestJson<UnityActionResponse>(
+      `/api/unity/scene-objects/${encodeURIComponent(String(instanceId))}`
+    );
+  },
+
   createObject(payload: CreateObjectPayload | FormData): Promise<UnityActionResponse> {
     if (payload instanceof FormData) {
       return requestForm<UnityActionResponse>("/api/unity/create-object", payload);
@@ -110,6 +121,13 @@ export const api = {
 
   editTransform(payload: EditTransformPayload): Promise<UnityActionResponse> {
     return requestJson<UnityActionResponse>("/api/unity/edit-transform", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+  },
+
+  editObject(payload: EditObjectPayload): Promise<UnityActionResponse> {
+    return requestJson<UnityActionResponse>("/api/unity/edit-object", {
       method: "POST",
       body: JSON.stringify(payload)
     });

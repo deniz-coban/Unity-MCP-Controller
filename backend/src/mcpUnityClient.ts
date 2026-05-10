@@ -10,10 +10,16 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { isMcpConfigured, unityConfig } from "./config.js";
 import type {
+  ColorRGBA,
   CreateLightPayload,
   CreateObjectPayload,
+  EditObjectPayload,
   EditTransformPayload,
   ImportModelPayload,
+  SceneObjectCategory,
+  SceneObjectDetails,
+  SceneObjectLightDetails,
+  SceneObjectSummary,
   UploadedTextureFile,
   UnityDefaultObjectType,
   UnityLightType,
@@ -34,10 +40,13 @@ interface ToolInputSchemaProperty {
 interface HierarchyObject {
   name?: unknown;
   instanceId?: unknown;
+  components?: unknown;
   children?: unknown;
 }
 
 interface HierarchyScene {
+  name?: unknown;
+  path?: unknown;
   rootObjects?: unknown;
 }
 
@@ -51,7 +60,20 @@ interface FlattenedHierarchyObject {
   name: string;
   instanceId: number;
   path: string;
+  sceneName?: string;
+  sceneFilePath?: string;
   scenePath?: string;
+  componentTypes: string[];
+  hasLight: boolean;
+  hasRenderer: boolean;
+  hasCamera: boolean;
+  category: SceneObjectCategory;
+  displayName: string;
+}
+
+interface ComponentInfo {
+  type?: unknown;
+  properties?: unknown;
 }
 
 interface UnityAssetInfo {
@@ -210,6 +232,8 @@ class McpUnityClient {
   private verifiedEditTransformTools = false;
   private verifiedSaveSceneTool = false;
   private verifiedCreateLightTools = false;
+  private verifiedSceneObjectReadTools = false;
+  private verifiedEditObjectTools = false;
   private canRefreshAssets = false;
 
   async addCube(): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
@@ -260,6 +284,73 @@ class McpUnityClient {
         data: {
           tool: unityConfig.mcp.addCubeTool,
           arguments: toolArguments
+        }
+      };
+    } catch (error) {
+      await this.reset();
+      return connectionError(error);
+    }
+  }
+
+  async listSceneObjects(): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
+    if (!isMcpConfigured()) {
+      return configurationError([
+        "Set UNITY_MCP_SERVER_ARGS to the absolute path of mcp-unity/Server~/build/index.js.",
+        "UNITY_MCP_SERVER_COMMAND defaults to node."
+      ]);
+    }
+
+    try {
+      const client = await this.connect();
+      await this.verifySceneObjectReadTools(client);
+      const objects = await this.readSceneObjectSummaries(client);
+
+      return {
+        ok: true,
+        mode: "mcp",
+        action: "listSceneObjects",
+        message: `Loaded ${objects.length} scene objects from Unity.`,
+        data: {
+          objects
+        }
+      };
+    } catch (error) {
+      await this.reset();
+      return connectionError(error);
+    }
+  }
+
+  async getSceneObject(
+    instanceId: number
+  ): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
+    if (!isMcpConfigured()) {
+      return configurationError([
+        "Set UNITY_MCP_SERVER_ARGS to the absolute path of mcp-unity/Server~/build/index.js.",
+        "UNITY_MCP_SERVER_COMMAND defaults to node."
+      ]);
+    }
+
+    try {
+      const client = await this.connect();
+      await this.verifySceneObjectReadTools(client);
+      const summary = await this.findSceneObjectSummary(client, instanceId);
+
+      if (!summary) {
+        return {
+          ok: false,
+          error: "Object no longer exists. Refresh scene objects."
+        };
+      }
+
+      const object = await this.readSceneObjectDetails(client, summary);
+
+      return {
+        ok: true,
+        mode: "mcp",
+        action: "getSceneObject",
+        message: `Loaded "${object.name}" from Unity.`,
+        data: {
+          object
         }
       };
     } catch (error) {
@@ -792,6 +883,159 @@ class McpUnityClient {
     }
   }
 
+  async editObject(
+    payload: EditObjectPayload
+  ): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
+    if (!isMcpConfigured()) {
+      return configurationError([
+        "Set UNITY_MCP_SERVER_ARGS to the absolute path of mcp-unity/Server~/build/index.js.",
+        "UNITY_MCP_SERVER_COMMAND defaults to node."
+      ]);
+    }
+
+    try {
+      const client = await this.connect();
+      await this.verifyEditObjectTools(client);
+
+      const summaries = await this.readSceneObjectSummaries(client);
+      const summary = summaries.find((object) => object.instanceId === payload.instanceId);
+
+      if (!summary) {
+        return {
+          ok: false,
+          error: "Object no longer exists. Refresh scene objects."
+        };
+      }
+
+      const beforeDetails = await this.readSceneObjectDetails(client, summary);
+      const requestedName = payload.name?.trim();
+      const finalName = requestedName
+        ? this.nextAvailableNameExcluding(requestedName, summaries, payload.instanceId)
+        : beforeDetails.name;
+
+      if (payload.light) {
+        if (!beforeDetails.hasLight) {
+          return {
+            ok: false,
+            error: "Selected object is not a light.",
+            details: [
+              "Light-specific fields can only be applied to objects with a Light component."
+            ]
+          };
+        }
+
+        if (
+          payload.light.spotAngle !== undefined &&
+          beforeDetails.light?.lightType !== "spot"
+        ) {
+          return {
+            ok: false,
+            error: "Spot angle can only be edited on Spot Light objects."
+          };
+        }
+      }
+
+      if (finalName !== beforeDetails.name) {
+        await this.callTool(
+          client,
+          "update_gameobject",
+          {
+            instanceId: payload.instanceId,
+            gameObjectData: {
+              name: finalName
+            }
+          },
+          "Renaming Unity object"
+        );
+      }
+
+      await this.callTool(
+        client,
+        "set_transform",
+        {
+          instanceId: payload.instanceId,
+          position: payload.position,
+          rotation: payload.rotation,
+          scale: payload.scale,
+          space: "world"
+        },
+        "Setting Unity object position, rotation, and scale"
+      );
+
+      if (payload.light) {
+        const componentData: Record<string, unknown> = {};
+
+        if (payload.light.intensity !== undefined) {
+          componentData.intensity = payload.light.intensity;
+        }
+        if (payload.light.color) {
+          componentData.color = payload.light.color;
+        }
+        if (payload.light.range !== undefined) {
+          componentData.range = payload.light.range;
+        }
+        if (payload.light.spotAngle !== undefined) {
+          componentData.spotAngle = payload.light.spotAngle;
+        }
+
+        if (Object.keys(componentData).length > 0) {
+          await this.callTool(
+            client,
+            "update_component",
+            {
+              instanceId: payload.instanceId,
+              componentName: "Light",
+              componentData
+            },
+            "Setting Unity light fields"
+          );
+        }
+      }
+
+      const refreshedSummary = await this.findSceneObjectSummary(
+        client,
+        payload.instanceId
+      );
+
+      if (!refreshedSummary) {
+        return {
+          ok: false,
+          error: "Object no longer exists. Refresh scene objects."
+        };
+      }
+
+      const object = await this.readSceneObjectDetails(client, refreshedSummary);
+      const renamedMessage =
+        requestedName && finalName !== requestedName
+          ? ` Requested name "${requestedName}" was already in use, so Unity object was renamed to "${finalName}".`
+          : "";
+
+      return {
+        ok: true,
+        mode: "mcp",
+        action: "editObject",
+        message: `Updated "${object.name}" in Unity.${renamedMessage}`,
+        data: {
+          object,
+          requestedName,
+          finalName
+        }
+      };
+    } catch (error) {
+      await this.reset();
+      return {
+        ok: false,
+        error: "Unity/MCP edit object failed.",
+        details: [
+          "Open the UnityMCPDemo project in Unity Editor.",
+          "Open Tools > MCP Unity > Server Window and click Start Server.",
+          "The new edit route targets objects by instanceId only.",
+          `Original error: ${getErrorMessage(error)}`
+        ]
+      };
+    }
+  }
+
   async saveScene(): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
     if (!isMcpConfigured()) {
       return configurationError([
@@ -1032,6 +1276,62 @@ class McpUnityClient {
     }
 
     this.verifiedCreateLightTools = true;
+  }
+
+  private async verifySceneObjectReadTools(client: Client): Promise<void> {
+    if (this.verifiedSceneObjectReadTools) {
+      return;
+    }
+
+    const [toolsResult, resourcesResult] = await Promise.all([
+      withTimeout(
+        client.request({ method: "tools/list" }, ListToolsResultSchema),
+        "Listing Unity MCP tools"
+      ),
+      withTimeout(
+        client.request({ method: "resources/list" }, ListResourcesResultSchema),
+        "Listing Unity MCP resources"
+      )
+    ]);
+
+    this.assertToolStringArgument(toolsResult.tools, "get_gameobject", "idOrName");
+
+    if (!resourcesResult.resources.some((resource) => resource.uri === hierarchyResourceUri)) {
+      throw new Error(`MCP resource "${hierarchyResourceUri}" was not found.`);
+    }
+
+    this.verifiedSceneObjectReadTools = true;
+  }
+
+  private async verifyEditObjectTools(client: Client): Promise<void> {
+    if (this.verifiedEditObjectTools) {
+      return;
+    }
+
+    const [toolsResult, resourcesResult] = await Promise.all([
+      withTimeout(
+        client.request({ method: "tools/list" }, ListToolsResultSchema),
+        "Listing Unity MCP tools"
+      ),
+      withTimeout(
+        client.request({ method: "resources/list" }, ListResourcesResultSchema),
+        "Listing Unity MCP resources"
+      )
+    ]);
+
+    this.assertToolStringArgument(toolsResult.tools, "get_gameobject", "idOrName");
+    this.assertToolObjectArgument(toolsResult.tools, "update_gameobject", "gameObjectData");
+    this.assertToolObjectArgument(toolsResult.tools, "set_transform", "position");
+    this.assertToolObjectArgument(toolsResult.tools, "set_transform", "rotation");
+    this.assertToolObjectArgument(toolsResult.tools, "set_transform", "scale");
+    this.assertToolStringArgument(toolsResult.tools, "update_component", "componentName");
+    this.assertToolObjectArgument(toolsResult.tools, "update_component", "componentData");
+
+    if (!resourcesResult.resources.some((resource) => resource.uri === hierarchyResourceUri)) {
+      throw new Error(`MCP resource "${hierarchyResourceUri}" was not found.`);
+    }
+
+    this.verifiedEditObjectTools = true;
   }
 
   private async verifyEditTransformTools(client: Client): Promise<void> {
@@ -1834,6 +2134,26 @@ class McpUnityClient {
     return `${baseName}_${index}`;
   }
 
+  private nextAvailableNameExcluding(
+    baseName: string,
+    objects: SceneObjectSummary[],
+    instanceId: number
+  ): string {
+    const nameExists = (name: string): boolean =>
+      objects.some((object) => object.instanceId !== instanceId && object.name === name);
+
+    if (!nameExists(baseName)) {
+      return baseName;
+    }
+
+    let index = 2;
+    while (nameExists(`${baseName}_${index}`)) {
+      index += 1;
+    }
+
+    return `${baseName}_${index}`;
+  }
+
   private async readHierarchyJson(client: Client): Promise<unknown> {
     const result = await withTimeout(
       client.request(
@@ -1863,6 +2183,97 @@ class McpUnityClient {
     return this.extractHierarchyObjects(await this.readHierarchyJson(client));
   }
 
+  private async readSceneObjectSummaries(client: Client): Promise<SceneObjectSummary[]> {
+    return this.extractHierarchyObjects(await this.readHierarchyJson(client));
+  }
+
+  private async findSceneObjectSummary(
+    client: Client,
+    instanceId: number
+  ): Promise<SceneObjectSummary | undefined> {
+    return (await this.readSceneObjectSummaries(client)).find(
+      (object) => object.instanceId === instanceId
+    );
+  }
+
+  private async readSceneObjectDetails(
+    client: Client,
+    summary: SceneObjectSummary
+  ): Promise<SceneObjectDetails> {
+    const result = await this.callTool(
+      client,
+      "get_gameobject",
+      {
+        idOrName: String(summary.instanceId)
+      },
+      "Reading Unity object details"
+    );
+    const parsed = JSON.parse(result.text) as { gameObject?: unknown };
+    const gameObject =
+      parsed.gameObject && typeof parsed.gameObject === "object"
+        ? (parsed.gameObject as Record<string, unknown>)
+        : undefined;
+
+    if (!gameObject) {
+      throw new Error("Unity object detail response did not include gameObject data.");
+    }
+
+    const name = typeof gameObject.name === "string" ? gameObject.name : summary.name;
+    const components = Array.isArray(gameObject.components)
+      ? (gameObject.components as ComponentInfo[])
+      : [];
+    const componentTypes = this.componentTypesFromComponents(components);
+    const transformProperties = this.findComponentProperties(components, "Transform");
+    const lightProperties = this.findComponentProperties(components, "Light");
+    const hasLight = componentTypes.includes("Light");
+    const hasRenderer = this.hasRendererComponent(components);
+    const hasCamera = componentTypes.includes("Camera");
+    const category = this.categoryFromComponentTypes(componentTypes);
+    const updatedSummary: SceneObjectSummary = {
+      ...summary,
+      name,
+      componentTypes,
+      hasLight,
+      hasRenderer,
+      hasCamera,
+      category,
+      displayName: this.sceneObjectDisplayName({
+        ...summary,
+        name
+      })
+    };
+
+    return {
+      ...updatedSummary,
+      position:
+        this.readVector3Property(transformProperties, ["position", "localPosition"]) ?? {
+          x: 0,
+          y: 0,
+          z: 0
+        },
+      rotation:
+        this.readVector3Property(transformProperties, [
+          "eulerAngles",
+          "localEulerAngles"
+        ]) ?? {
+          x: 0,
+          y: 0,
+          z: 0
+        },
+      scale:
+        this.readVector3Property(transformProperties, ["localScale"]) ?? {
+          x: 1,
+          y: 1,
+          z: 1
+        },
+      ...(hasLight
+        ? {
+            light: this.extractLightDetails(lightProperties)
+          }
+        : {})
+    };
+  }
+
   private async readHierarchySnapshot(client: Client): Promise<HierarchySnapshot> {
     return this.extractHierarchySnapshot(await this.readHierarchyJson(client));
   }
@@ -1889,7 +2300,8 @@ class McpUnityClient {
     const visitObject = (
       object: HierarchyObject,
       parentPath: string,
-      sceneName?: string
+      sceneName?: string,
+      sceneFilePath?: string
     ): void => {
       const name = typeof object.name === "string" ? object.name : undefined;
       const instanceId =
@@ -1901,18 +2313,31 @@ class McpUnityClient {
         : parentPath;
 
       if (name && instanceId !== undefined) {
-        objects.push({
+        const componentTypes = this.componentTypesFromComponents(object.components);
+        const baseObject = {
           name,
           instanceId,
           path: currentPath,
+          ...(sceneName ? { sceneName } : {}),
+          ...(sceneFilePath ? { sceneFilePath } : {}),
           ...(sceneName ? { scenePath: `${sceneName}/${currentPath}` } : {})
+        };
+
+        objects.push({
+          ...baseObject,
+          componentTypes,
+          hasLight: componentTypes.includes("Light"),
+          hasRenderer: this.hasRendererComponent(object.components),
+          hasCamera: componentTypes.includes("Camera"),
+          category: this.categoryFromComponentTypes(componentTypes),
+          displayName: this.sceneObjectDisplayName(baseObject)
         });
       }
 
       if (Array.isArray(object.children)) {
         for (const child of object.children) {
           if (child && typeof child === "object") {
-            visitObject(child as HierarchyObject, currentPath, sceneName);
+            visitObject(child as HierarchyObject, currentPath, sceneName, sceneFilePath);
           }
         }
       }
@@ -1929,6 +2354,10 @@ class McpUnityClient {
         typeof sceneRecord.name === "string" && sceneRecord.name.length > 0
           ? sceneRecord.name
           : undefined;
+      const sceneFilePath =
+        typeof sceneRecord.path === "string" && sceneRecord.path.length > 0
+          ? sceneRecord.path
+          : undefined;
 
       if (!Array.isArray(rootObjects)) {
         continue;
@@ -1936,12 +2365,169 @@ class McpUnityClient {
 
       for (const rootObject of rootObjects) {
         if (rootObject && typeof rootObject === "object") {
-          visitObject(rootObject as HierarchyObject, "", sceneName);
+          visitObject(rootObject as HierarchyObject, "", sceneName, sceneFilePath);
         }
       }
     }
 
     return objects;
+  }
+
+  private sceneObjectDisplayName(
+    object: Pick<SceneObjectSummary, "name" | "path" | "scenePath" | "instanceId">
+  ): string {
+    return `${object.name} — ${object.scenePath ?? object.path} — id ${object.instanceId}`;
+  }
+
+  private componentTypesFromComponents(components: unknown): string[] {
+    if (!Array.isArray(components)) {
+      return [];
+    }
+
+    return components
+      .map((component) => {
+        if (!component || typeof component !== "object") {
+          return undefined;
+        }
+
+        const type = (component as { type?: unknown }).type;
+        return typeof type === "string" ? type : undefined;
+      })
+      .filter((type): type is string => Boolean(type));
+  }
+
+  private categoryFromComponentTypes(componentTypes: string[]): SceneObjectCategory {
+    if (componentTypes.includes("Light")) {
+      return "light";
+    }
+
+    if (componentTypes.includes("Camera")) {
+      return "camera";
+    }
+
+    if (componentTypes.some((type) => type.endsWith("Renderer"))) {
+      return "renderer";
+    }
+
+    return "generic";
+  }
+
+  private findComponentProperties(
+    components: ComponentInfo[],
+    componentType: string
+  ): Record<string, unknown> | undefined {
+    const component = components.find((item) => item.type === componentType);
+
+    return component?.properties &&
+      typeof component.properties === "object" &&
+      !Array.isArray(component.properties)
+      ? (component.properties as Record<string, unknown>)
+      : undefined;
+  }
+
+  private readVector3Property(
+    properties: Record<string, unknown> | undefined,
+    names: string[]
+  ): SceneObjectDetails["position"] | undefined {
+    if (!properties) {
+      return undefined;
+    }
+
+    for (const name of names) {
+      const value = properties[name];
+      if (
+        value &&
+        typeof value === "object" &&
+        typeof (value as { x?: unknown }).x === "number" &&
+        typeof (value as { y?: unknown }).y === "number" &&
+        typeof (value as { z?: unknown }).z === "number"
+      ) {
+        return {
+          x: (value as { x: number }).x,
+          y: (value as { y: number }).y,
+          z: (value as { z: number }).z
+        };
+      }
+    }
+
+    return undefined;
+  }
+
+  private extractLightDetails(
+    properties: Record<string, unknown> | undefined
+  ): SceneObjectLightDetails {
+    const color = this.readColorProperty(properties?.color) ?? {
+      r: 1,
+      g: 1,
+      b: 1,
+      a: 1
+    };
+    const rawLightType = typeof properties?.type === "string" ? properties.type : undefined;
+    const lightType = this.normalizeLightType(rawLightType);
+    const range = typeof properties?.range === "number" ? properties.range : undefined;
+    const spotAngle =
+      typeof properties?.spotAngle === "number" ? properties.spotAngle : undefined;
+
+    return {
+      ...(lightType ? { lightType } : {}),
+      color,
+      colorHex: this.colorToHex(color),
+      intensity:
+        typeof properties?.intensity === "number" ? properties.intensity : 1,
+      ...(range !== undefined ? { range } : {}),
+      ...(spotAngle !== undefined ? { spotAngle } : {})
+    };
+  }
+
+  private readColorProperty(value: unknown): ColorRGBA | undefined {
+    if (
+      value &&
+      typeof value === "object" &&
+      typeof (value as { r?: unknown }).r === "number" &&
+      typeof (value as { g?: unknown }).g === "number" &&
+      typeof (value as { b?: unknown }).b === "number"
+    ) {
+      return {
+        r: (value as { r: number }).r,
+        g: (value as { g: number }).g,
+        b: (value as { b: number }).b,
+        a:
+          typeof (value as { a?: unknown }).a === "number"
+            ? (value as { a: number }).a
+            : 1
+      };
+    }
+
+    return undefined;
+  }
+
+  private colorToHex(color: ColorRGBA): string {
+    const toHex = (value: number): string =>
+      Math.max(0, Math.min(255, Math.round(value * 255)))
+        .toString(16)
+        .padStart(2, "0");
+
+    const alpha = color.a < 1 ? toHex(color.a) : "";
+    return `#${toHex(color.r)}${toHex(color.g)}${toHex(color.b)}${alpha}`;
+  }
+
+  private normalizeLightType(value: string | undefined): UnityLightType | undefined {
+    if (!value) {
+      return undefined;
+    }
+
+    const normalized = value.toLowerCase();
+    if (normalized.includes("directional")) {
+      return "directional";
+    }
+    if (normalized.includes("point")) {
+      return "point";
+    }
+    if (normalized.includes("spot")) {
+      return "spot";
+    }
+
+    return undefined;
   }
 
   private resolveHierarchyTarget(
@@ -2165,6 +2751,8 @@ class McpUnityClient {
     this.verifiedEditTransformTools = false;
     this.verifiedSaveSceneTool = false;
     this.verifiedCreateLightTools = false;
+    this.verifiedSceneObjectReadTools = false;
+    this.verifiedEditObjectTools = false;
     this.canRefreshAssets = false;
     this.connectPromise = undefined;
 

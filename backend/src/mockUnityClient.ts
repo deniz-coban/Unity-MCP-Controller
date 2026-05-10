@@ -4,9 +4,13 @@ import type {
   MockSceneState,
   CreateLightPayload,
   CreateObjectPayload,
+  EditObjectPayload,
   EditTransformPayload,
   ImportModelPayload,
   ObjectTransformPayload,
+  SceneObjectCategory,
+  SceneObjectDetails,
+  SceneObjectSummary,
   TextureMetadata,
   UnityAction,
   UnityActionErrorResponse,
@@ -23,6 +27,7 @@ const state: MockSceneState = {
   sceneCreated: false,
   objects: []
 };
+let nextInstanceId = 1;
 
 const mockSuccess = (
   action: UnityAction,
@@ -75,6 +80,9 @@ const ensureScene = (): UnityActionErrorResponse | undefined => {
 const findObject = (name: string): MockObject | undefined =>
   state.objects.find((object) => object.name === name);
 
+const findObjectByInstanceId = (instanceId: number): MockObject | undefined =>
+  state.objects.find((object) => object.instanceId === instanceId);
+
 const nextObjectName = (baseName: string): string => {
   if (!findObject(baseName)) {
     return baseName;
@@ -87,6 +95,88 @@ const nextObjectName = (baseName: string): string => {
 
   return `${baseName}_${index}`;
 };
+
+const nextObjectNameExcluding = (baseName: string, instanceId: number): string => {
+  const nameExists = (name: string): boolean =>
+    state.objects.some(
+      (object) => object.instanceId !== instanceId && object.name === name
+    );
+
+  if (!nameExists(baseName)) {
+    return baseName;
+  }
+
+  let index = 2;
+  while (nameExists(`${baseName}_${index}`)) {
+    index += 1;
+  }
+
+  return `${baseName}_${index}`;
+};
+
+const componentTypesForObject = (object: MockObject): string[] => {
+  if (object.type === "light") {
+    return ["Transform", "Light"];
+  }
+
+  if (object.type === "model") {
+    return ["Transform", "MeshRenderer"];
+  }
+
+  return ["Transform", "MeshFilter", "MeshRenderer"];
+};
+
+const categoryForObject = (object: MockObject): SceneObjectCategory => {
+  if (object.type === "light") {
+    return "light";
+  }
+
+  if (object.type === "model") {
+    return "model";
+  }
+
+  return "primitive";
+};
+
+const displayNameForObject = (object: MockObject): string =>
+  `${object.name} — MockScene/${object.name} — id ${object.instanceId}`;
+
+const sceneObjectSummary = (object: MockObject): SceneObjectSummary => {
+  const componentTypes = componentTypesForObject(object);
+
+  return {
+    name: object.name,
+    instanceId: object.instanceId,
+    path: object.name,
+    sceneName: "MockScene",
+    scenePath: `MockScene/${object.name}`,
+    componentTypes,
+    hasLight: object.type === "light",
+    hasRenderer: object.type !== "light",
+    hasCamera: false,
+    category: categoryForObject(object),
+    displayName: displayNameForObject(object)
+  };
+};
+
+const sceneObjectDetails = (object: MockObject): SceneObjectDetails => ({
+  ...sceneObjectSummary(object),
+  position: { ...object.position },
+  rotation: { ...object.rotation },
+  scale: { ...object.scale },
+  ...(object.light
+    ? {
+        light: {
+          lightType: object.light.lightType,
+          color: { ...object.light.color },
+          colorHex: object.light.colorHex,
+          intensity: object.light.intensity,
+          range: object.light.range,
+          spotAngle: object.light.spotAngle
+        }
+      }
+    : {})
+});
 
 const textureMetadata = (
   texture: CreateObjectPayload["texture"] | ImportModelPayload["texture"]
@@ -110,6 +200,7 @@ const addObject = (
   }
 
   const object: MockObject = {
+    instanceId: nextInstanceId++,
     name: nextObjectName(baseName),
     type,
     position: { ...defaultPosition },
@@ -137,6 +228,7 @@ const createObject = (
   const finalName = nextObjectName(payload.name);
 
   const object: MockObject = {
+    instanceId: nextInstanceId++,
     name: finalName,
     type: payload.type,
     position: { ...payload.position },
@@ -171,6 +263,7 @@ const createLight = (
 
   const finalName = nextObjectName(payload.name);
   const object: MockObject = {
+    instanceId: nextInstanceId++,
     name: finalName,
     type: "light",
     position: { ...payload.position },
@@ -180,7 +273,9 @@ const createLight = (
       lightType: payload.type,
       intensity: payload.intensity,
       color: { ...payload.color },
-      colorHex: payload.colorHex
+      colorHex: payload.colorHex,
+      range: 10,
+      spotAngle: payload.type === "spot" ? 30 : undefined
     }
   };
 
@@ -205,6 +300,7 @@ export const mockUnityClient = {
   createScene(): UnityActionSuccessResponse {
     state.sceneCreated = true;
     state.objects = [];
+    nextInstanceId = 1;
 
     return mockSuccess("createScene", "Mock scene created successfully.", {
       state: cloneState()
@@ -224,6 +320,35 @@ export const mockUnityClient = {
     );
   },
 
+  listSceneObjects(): UnityActionResponse {
+    const sceneError = ensureScene();
+    if (sceneError) {
+      return sceneError;
+    }
+
+    const objects = state.objects.map(sceneObjectSummary);
+
+    return mockSuccess("listSceneObjects", `Mock scene has ${objects.length} objects.`, {
+      objects
+    });
+  },
+
+  getSceneObject(instanceId: number): UnityActionResponse {
+    const sceneError = ensureScene();
+    if (sceneError) {
+      return sceneError;
+    }
+
+    const object = findObjectByInstanceId(instanceId);
+    if (!object) {
+      return mockError("Object no longer exists. Refresh scene objects.");
+    }
+
+    return mockSuccess("getSceneObject", `Loaded mock object ${object.name}.`, {
+      object: sceneObjectDetails(object)
+    });
+  },
+
   createObject(payload: CreateObjectPayload): UnityActionResponse {
     return createObject(payload);
   },
@@ -240,6 +365,7 @@ export const mockUnityClient = {
 
     const finalName = nextObjectName(payload.name);
     const object: MockObject = {
+      instanceId: nextInstanceId++,
       name: finalName,
       type: "model",
       position: { ...payload.position },
@@ -256,23 +382,23 @@ export const mockUnityClient = {
         ? `Mock model imported as ${finalName} with texture ${payload.texture.originalName}.`
         : `Mock model imported as ${finalName}.`,
       {
-      object,
-      requestedName: payload.name,
-      file: {
-        originalName: payload.file.originalName,
-        extension: payload.file.extension,
-        sizeBytes: payload.file.sizeBytes
-      },
-      ...(payload.texture
-        ? {
-            texture: {
-              originalName: payload.texture.originalName,
-              extension: payload.texture.extension,
-              sizeBytes: payload.texture.sizeBytes
+        object,
+        requestedName: payload.name,
+        file: {
+          originalName: payload.file.originalName,
+          extension: payload.file.extension,
+          sizeBytes: payload.file.sizeBytes
+        },
+        ...(payload.texture
+          ? {
+              texture: {
+                originalName: payload.texture.originalName,
+                extension: payload.texture.extension,
+                sizeBytes: payload.texture.sizeBytes
+              }
             }
-          }
-        : {}),
-      state: cloneState()
+          : {}),
+        state: cloneState()
       }
     );
   },
@@ -379,6 +505,62 @@ export const mockUnityClient = {
         state: cloneState()
       }
     );
+  },
+
+  editObject(payload: EditObjectPayload): UnityActionResponse {
+    const sceneError = ensureScene();
+    if (sceneError) {
+      return sceneError;
+    }
+
+    const object = findObjectByInstanceId(payload.instanceId);
+    if (!object) {
+      return mockError("Object no longer exists. Refresh scene objects.");
+    }
+
+    if (payload.light) {
+      if (!object.light) {
+        return mockError("Selected object is not a light.", [
+          "Light-specific fields can only be applied to mock light objects."
+        ]);
+      }
+
+      if (
+        payload.light.spotAngle !== undefined &&
+        object.light.lightType !== "spot"
+      ) {
+        return mockError("Spot angle can only be edited on Spot Light objects.");
+      }
+    }
+
+    if (payload.name !== undefined) {
+      object.name = nextObjectNameExcluding(payload.name, object.instanceId);
+    }
+
+    object.position = { ...payload.position };
+    object.rotation = { ...payload.rotation };
+    object.scale = { ...payload.scale };
+
+    if (payload.light && object.light) {
+      if (payload.light.intensity !== undefined) {
+        object.light.intensity = payload.light.intensity;
+      }
+      if (payload.light.color && payload.light.colorHex) {
+        object.light.color = { ...payload.light.color };
+        object.light.colorHex = payload.light.colorHex;
+      }
+      if (payload.light.range !== undefined) {
+        object.light.range = payload.light.range;
+      }
+      if (payload.light.spotAngle !== undefined) {
+        object.light.spotAngle = payload.light.spotAngle;
+      }
+    }
+
+    return mockSuccess("editObject", `Mock object ${object.name} updated.`, {
+      object: sceneObjectDetails(object),
+      state: cloneState()
+    });
   },
 
   saveScene(): UnityActionResponse {

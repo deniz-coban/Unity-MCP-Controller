@@ -4,7 +4,9 @@ import type {
   BackendMode,
   CreateLightPayload,
   CreateObjectPayload,
-  EditTransformPayload,
+  EditObjectPayload,
+  SceneObjectDetails,
+  SceneObjectSummary,
   UnityDefaultObjectType,
   UnityLightType,
   UnityActionErrorResponse
@@ -35,8 +37,8 @@ const defaultCreateObjectValues = {
   scaleZ: "1"
 };
 
-const defaultEditTransformValues = {
-  target: "",
+const defaultEditObjectValues = {
+  name: "",
   positionX: "0",
   positionY: "0",
   positionZ: "0",
@@ -45,7 +47,11 @@ const defaultEditTransformValues = {
   rotationZ: "0",
   scaleX: "1",
   scaleY: "1",
-  scaleZ: "1"
+  scaleZ: "1",
+  lightColor: "#ffffff",
+  lightIntensity: "1",
+  lightRange: "10",
+  lightSpotAngle: "30"
 };
 
 const defaultImportModelValues = {
@@ -395,10 +401,61 @@ const buildImportModelFormData = (
   return formData;
 };
 
-const buildEditTransformRequest = (
-  values: typeof defaultEditTransformValues
-): EditTransformPayload | string => {
-  const target = values.target.trim();
+const editValuesFromSceneObject = (
+  object: SceneObjectDetails
+): typeof defaultEditObjectValues => ({
+  name: object.name,
+  positionX: String(object.position.x),
+  positionY: String(object.position.y),
+  positionZ: String(object.position.z),
+  rotationX: String(object.rotation.x),
+  rotationY: String(object.rotation.y),
+  rotationZ: String(object.rotation.z),
+  scaleX: String(object.scale.x),
+  scaleY: String(object.scale.y),
+  scaleZ: String(object.scale.z),
+  lightColor: object.light?.colorHex ?? "#ffffff",
+  lightIntensity: String(object.light?.intensity ?? 1),
+  lightRange: String(object.light?.range ?? 10),
+  lightSpotAngle: String(object.light?.spotAngle ?? 30)
+});
+
+const sceneObjectSummaryFromDetails = (
+  object: SceneObjectDetails
+): SceneObjectSummary => ({
+  name: object.name,
+  instanceId: object.instanceId,
+  path: object.path,
+  sceneName: object.sceneName,
+  sceneFilePath: object.sceneFilePath,
+  scenePath: object.scenePath,
+  componentTypes: object.componentTypes,
+  hasLight: object.hasLight,
+  hasRenderer: object.hasRenderer,
+  hasCamera: object.hasCamera,
+  category: object.category,
+  displayName: object.displayName
+});
+
+const extractSceneObjects = (response: { data?: unknown }): SceneObjectSummary[] => {
+  const data = response.data as { objects?: unknown } | undefined;
+  return Array.isArray(data?.objects) ? (data.objects as SceneObjectSummary[]) : [];
+};
+
+const extractSceneObject = (response: { data?: unknown }): SceneObjectDetails | undefined => {
+  const data = response.data as { object?: unknown } | undefined;
+  return data?.object as SceneObjectDetails | undefined;
+};
+
+const buildEditObjectRequest = (
+  selectedObject: SceneObjectDetails | null,
+  values: typeof defaultEditObjectValues
+): EditObjectPayload | string => {
+  if (!selectedObject) {
+    return "Select a scene object first.";
+  }
+
+  const name = values.name.trim();
   const position = {
     x: Number(values.positionX),
     y: Number(values.positionY),
@@ -415,8 +472,8 @@ const buildEditTransformRequest = (
     z: Number(values.scaleZ)
   };
 
-  if (!target) {
-    return "Target object name, path, or instance ID is required.";
+  if (!name) {
+    return "Object name is required.";
   }
 
   if (
@@ -447,12 +504,47 @@ const buildEditTransformRequest = (
     return "Scale values must be greater than 0.";
   }
 
-  return {
-    target,
+  const payload: EditObjectPayload = {
+    instanceId: selectedObject.instanceId,
+    name,
     position,
     rotation,
     scale
   };
+
+  if (selectedObject.hasLight) {
+    const intensity = Number(values.lightIntensity);
+    const range = Number(values.lightRange);
+    const spotAngle = Number(values.lightSpotAngle);
+
+    if (!Number.isFinite(intensity) || intensity < 0) {
+      return "Light intensity must be a valid number greater than or equal to 0.";
+    }
+
+    if (!Number.isFinite(range) || range <= 0) {
+      return "Light range must be a valid number greater than 0.";
+    }
+
+    if (!colorHexPattern.test(values.lightColor.trim())) {
+      return "Light color must be #RRGGBB or #RRGGBBAA.";
+    }
+
+    payload.light = {
+      color: values.lightColor.trim(),
+      intensity,
+      range
+    };
+
+    if (selectedObject.light?.lightType === "spot") {
+      if (!Number.isFinite(spotAngle) || spotAngle <= 0 || spotAngle > 179) {
+        return "Spot angle must be greater than 0 and less than or equal to 179.";
+      }
+
+      payload.light.spotAngle = spotAngle;
+    }
+  }
+
+  return payload;
 };
 
 export default function App() {
@@ -471,8 +563,12 @@ export default function App() {
   const [importModelValues, setImportModelValues] = useState(
     defaultImportModelValues
   );
-  const [editTransformValues, setEditTransformValues] = useState(
-    defaultEditTransformValues
+  const [sceneObjects, setSceneObjects] = useState<SceneObjectSummary[]>([]);
+  const [sceneObjectSearch, setSceneObjectSearch] = useState("");
+  const [selectedSceneObject, setSelectedSceneObject] =
+    useState<SceneObjectDetails | null>(null);
+  const [editObjectValues, setEditObjectValues] = useState(
+    defaultEditObjectValues
   );
   const [logs, setLogs] = useState<LogEntry[]>([
     {
@@ -500,6 +596,24 @@ export default function App() {
   const sceneActionSubtitle = isMcpMode
     ? "Connected through Unity MCP. Default objects, lights, model imports, textures, and transform editing are enabled."
     : "Mock responses only. No Unity or MCP connection is active.";
+  const filteredSceneObjects = useMemo(() => {
+    const query = sceneObjectSearch.trim().toLowerCase();
+    const objects = query
+      ? sceneObjects.filter((object) =>
+          [
+            object.name,
+            object.path,
+            object.scenePath,
+            object.displayName,
+            String(object.instanceId)
+          ]
+            .filter(Boolean)
+            .some((value) => value!.toLowerCase().includes(query))
+        )
+      : sceneObjects;
+
+    return objects.slice(0, 12);
+  }, [sceneObjectSearch, sceneObjects]);
 
   const addLog = (entry: Omit<LogEntry, "id">) => {
     setLogs((current) => [
@@ -553,21 +667,152 @@ export default function App() {
     }
   };
 
-  const submitEditTransform = (event: FormEvent<HTMLFormElement>) => {
+  const applySceneObjectDetails = (object: SceneObjectDetails) => {
+    setSelectedSceneObject(object);
+    setEditObjectValues(editValuesFromSceneObject(object));
+    setSceneObjectSearch(object.displayName);
+    setSceneObjects((current) => {
+      const summary = sceneObjectSummaryFromDetails(object);
+      const existingIndex = current.findIndex(
+        (item) => item.instanceId === object.instanceId
+      );
+
+      if (existingIndex === -1) {
+        return [summary, ...current];
+      }
+
+      const next = [...current];
+      next[existingIndex] = summary;
+      return next;
+    });
+  };
+
+  const refreshSceneObjects = async () => {
+    setIsBusy(true);
+
+    try {
+      const response = await api.sceneObjects();
+      if (!response.ok) {
+        throw response;
+      }
+
+      const objects = extractSceneObjects(response);
+      setSceneObjects(objects);
+
+      if (selectedSceneObject) {
+        const selectedStillExists = objects.some(
+          (object) => object.instanceId === selectedSceneObject.instanceId
+        );
+
+        if (selectedStillExists) {
+          const detailsResponse = await api.sceneObject(selectedSceneObject.instanceId);
+          if (!detailsResponse.ok) {
+            throw detailsResponse;
+          }
+
+          const object = extractSceneObject(detailsResponse);
+          if (object) {
+            applySceneObjectDetails(object);
+          }
+        } else {
+          setSelectedSceneObject(null);
+          setEditObjectValues(defaultEditObjectValues);
+          setSceneObjectSearch("");
+        }
+      }
+
+      addLog({
+        tone: "success",
+        title: "Refresh scene objects",
+        details: [response.message ?? `Loaded ${objects.length} scene objects.`]
+      });
+    } catch (error) {
+      addLog({
+        tone: "error",
+        title: "Refresh scene objects failed",
+        details: formatError(error)
+      });
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const loadSceneObjectDetails = async (instanceId: number) => {
+    setIsBusy(true);
+
+    try {
+      const response = await api.sceneObject(instanceId);
+      if (!response.ok) {
+        throw response;
+      }
+
+      const object = extractSceneObject(response);
+
+      if (!object) {
+        throw { error: "Scene object details were missing from the response." };
+      }
+
+      applySceneObjectDetails(object);
+      addLog({
+        tone: "success",
+        title: "Load scene object",
+        details: [response.message ?? `Loaded ${object.displayName}.`]
+      });
+    } catch (error) {
+      addLog({
+        tone: "error",
+        title: "Load scene object failed",
+        details: formatError(error)
+      });
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const submitEditObject = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
-    const payload = buildEditTransformRequest(editTransformValues);
+    const payload = buildEditObjectRequest(selectedSceneObject, editObjectValues);
 
     if (typeof payload === "string") {
       addLog({
         tone: "error",
-        title: "Apply transform failed",
+        title: "Apply object changes failed",
         details: [payload]
       });
       return;
     }
 
-    void runAction("Apply transform", () => api.editTransform(payload));
+    setIsBusy(true);
+
+    void api
+      .editObject(payload)
+      .then((response) => {
+        if (!response.ok) {
+          throw response;
+        }
+
+        const object = extractSceneObject(response);
+        if (object) {
+          applySceneObjectDetails(object);
+        }
+
+        addLog({
+          tone: "success",
+          title: "Apply object changes",
+          details: [response.message ?? "Object updated."]
+        });
+      })
+      .catch((error) => {
+        addLog({
+          tone: "error",
+          title: "Apply object changes failed",
+          details: formatError(error)
+        });
+      })
+      .finally(() => {
+        setIsBusy(false);
+      });
   };
 
   const submitCreateObject = (event: FormEvent<HTMLFormElement>) => {
@@ -1202,90 +1447,242 @@ export default function App() {
         </button>
       </form>
 
-      <form className="panel" onSubmit={submitEditTransform}>
-        <div className="panel-heading">
-          <h2>Edit existing object</h2>
-          <p>Target an object by unique name, hierarchy path, or instance ID.</p>
+      <form className="panel" onSubmit={submitEditObject}>
+        <div className="panel-heading split-heading">
+          <div>
+            <h2>Edit existing object</h2>
+            <p>Refresh the active scene, search by name, path, or ID, then edit the selected instance.</p>
+          </div>
+          <button
+            className="secondary-button"
+            disabled={isBusy}
+            onClick={() => void refreshSceneObjects()}
+            type="button"
+          >
+            Refresh scene objects
+          </button>
         </div>
         <div className="field-stack">
           <label>
-            Target object name, path, or instance ID
+            Search scene objects
             <input
-              value={editTransformValues.target}
-              onChange={(event) =>
-                setEditTransformValues((current) => ({
-                  ...current,
-                  target: event.target.value
-                }))
-              }
-              placeholder="Cube or Parent/Child or 123456"
+              value={sceneObjectSearch}
+              onChange={(event) => setSceneObjectSearch(event.target.value)}
+              placeholder="Cube, SampleScene/Cube, or 123456"
             />
           </label>
-          <div className="coordinate-groups">
-            <fieldset>
-              <legend>Position</legend>
-              <div className="coordinate-row">
-                {(["X", "Y", "Z"] as const).map((axis) => (
-                  <label key={axis}>
-                    {axis}
-                    <input
-                      value={editTransformValues[`position${axis}`]}
-                      onChange={(event) =>
-                        setEditTransformValues((current) => ({
-                          ...current,
-                          [`position${axis}`]: event.target.value
-                        }))
-                      }
-                      inputMode="decimal"
-                    />
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-            <fieldset>
-              <legend>Rotation</legend>
-              <div className="coordinate-row">
-                {(["X", "Y", "Z"] as const).map((axis) => (
-                  <label key={axis}>
-                    {axis}
-                    <input
-                      value={editTransformValues[`rotation${axis}`]}
-                      onChange={(event) =>
-                        setEditTransformValues((current) => ({
-                          ...current,
-                          [`rotation${axis}`]: event.target.value
-                        }))
-                      }
-                      inputMode="decimal"
-                    />
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-            <fieldset>
-              <legend>Scale</legend>
-              <div className="coordinate-row">
-                {(["X", "Y", "Z"] as const).map((axis) => (
-                  <label key={axis}>
-                    {axis}
-                    <input
-                      value={editTransformValues[`scale${axis}`]}
-                      onChange={(event) =>
-                        setEditTransformValues((current) => ({
-                          ...current,
-                          [`scale${axis}`]: event.target.value
-                        }))
-                      }
-                      inputMode="decimal"
-                    />
-                  </label>
-                ))}
-              </div>
-            </fieldset>
+
+          <div className="object-picker-list" role="listbox" aria-label="Scene objects">
+            {filteredSceneObjects.length > 0 ? (
+              filteredSceneObjects.map((object) => (
+                <button
+                  className={
+                    selectedSceneObject?.instanceId === object.instanceId
+                      ? "object-picker-option active"
+                      : "object-picker-option"
+                  }
+                  disabled={isBusy}
+                  key={object.instanceId}
+                  onClick={() => void loadSceneObjectDetails(object.instanceId)}
+                  type="button"
+                >
+                  <span className="object-picker-name">{object.name}</span>
+                  <span>
+                    {object.scenePath ?? object.path} - id {object.instanceId} - {object.category}
+                  </span>
+                </button>
+              ))
+            ) : (
+              <p className="empty-log">
+                No matching objects. Refresh scene objects to load the active scene.
+              </p>
+            )}
           </div>
+
+          {selectedSceneObject ? (
+            <>
+              <div className="object-summary">
+                <strong>{selectedSceneObject.name}</strong>
+                <span>{selectedSceneObject.scenePath ?? selectedSceneObject.path}</span>
+                {selectedSceneObject.sceneFilePath ? (
+                  <span>{selectedSceneObject.sceneFilePath}</span>
+                ) : null}
+                <span>
+                  id {selectedSceneObject.instanceId} - {selectedSceneObject.category}
+                  {selectedSceneObject.componentTypes.length
+                    ? ` - ${selectedSceneObject.componentTypes.join(", ")}`
+                    : ""}
+                </span>
+              </div>
+
+              <label>
+                Object name
+                <input
+                  value={editObjectValues.name}
+                  onChange={(event) =>
+                    setEditObjectValues((current) => ({
+                      ...current,
+                      name: event.target.value
+                    }))
+                  }
+                  placeholder="Object name"
+                />
+              </label>
+
+              <div className="coordinate-groups">
+                <fieldset>
+                  <legend>Position</legend>
+                  <div className="coordinate-row">
+                    {(["X", "Y", "Z"] as const).map((axis) => (
+                      <label key={axis}>
+                        {axis}
+                        <input
+                          value={editObjectValues[`position${axis}`]}
+                          onChange={(event) =>
+                            setEditObjectValues((current) => ({
+                              ...current,
+                              [`position${axis}`]: event.target.value
+                            }))
+                          }
+                          inputMode="decimal"
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+                <fieldset>
+                  <legend>Rotation</legend>
+                  <div className="coordinate-row">
+                    {(["X", "Y", "Z"] as const).map((axis) => (
+                      <label key={axis}>
+                        {axis}
+                        <input
+                          value={editObjectValues[`rotation${axis}`]}
+                          onChange={(event) =>
+                            setEditObjectValues((current) => ({
+                              ...current,
+                              [`rotation${axis}`]: event.target.value
+                            }))
+                          }
+                          inputMode="decimal"
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+                <fieldset>
+                  <legend>Scale</legend>
+                  <div className="coordinate-row">
+                    {(["X", "Y", "Z"] as const).map((axis) => (
+                      <label key={axis}>
+                        {axis}
+                        <input
+                          value={editObjectValues[`scale${axis}`]}
+                          onChange={(event) =>
+                            setEditObjectValues((current) => ({
+                              ...current,
+                              [`scale${axis}`]: event.target.value
+                            }))
+                          }
+                          inputMode="decimal"
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+              </div>
+
+              {selectedSceneObject.hasLight ? (
+                <fieldset className="light-edit-fields">
+                  <legend>Light</legend>
+                  <p className="field-note">
+                    Type: {selectedSceneObject.light?.lightType ?? "Unknown"}
+                  </p>
+                  <div className="property-row">
+                    <label>
+                      Intensity
+                      <input
+                        value={editObjectValues.lightIntensity}
+                        onChange={(event) =>
+                          setEditObjectValues((current) => ({
+                            ...current,
+                            lightIntensity: event.target.value
+                          }))
+                        }
+                        inputMode="decimal"
+                      />
+                    </label>
+                    <label>
+                      Range
+                      <input
+                        value={editObjectValues.lightRange}
+                        onChange={(event) =>
+                          setEditObjectValues((current) => ({
+                            ...current,
+                            lightRange: event.target.value
+                          }))
+                        }
+                        inputMode="decimal"
+                      />
+                    </label>
+                    {selectedSceneObject.light?.lightType === "spot" ? (
+                      <label>
+                        Spot angle
+                        <input
+                          value={editObjectValues.lightSpotAngle}
+                          onChange={(event) =>
+                            setEditObjectValues((current) => ({
+                              ...current,
+                              lightSpotAngle: event.target.value
+                            }))
+                          }
+                          inputMode="decimal"
+                        />
+                      </label>
+                    ) : null}
+                    <label>
+                      Color
+                      <input
+                        value={editObjectValues.lightColor}
+                        onChange={(event) =>
+                          setEditObjectValues((current) => ({
+                            ...current,
+                            lightColor: event.target.value
+                          }))
+                        }
+                        placeholder="#ffffff"
+                      />
+                    </label>
+                    <label>
+                      Preview
+                      <input
+                        aria-label="Selected light color picker"
+                        type="color"
+                        value={
+                          colorHexPattern.test(editObjectValues.lightColor)
+                            ? editObjectValues.lightColor.slice(0, 7)
+                            : "#ffffff"
+                        }
+                        onChange={(event) =>
+                          setEditObjectValues((current) => ({
+                            ...current,
+                            lightColor: event.target.value
+                          }))
+                        }
+                      />
+                    </label>
+                  </div>
+                </fieldset>
+              ) : null}
+            </>
+          ) : (
+            <p className="empty-log">
+              Select an object to edit its current name, transform, and supported fields.
+            </p>
+          )}
         </div>
-        <button disabled={isBusy} type="submit">
-          Apply transform
+        <button disabled={isBusy || !selectedSceneObject} type="submit">
+          Apply changes
         </button>
       </form>
 
