@@ -3,11 +3,14 @@ import type {
   MockObjectType,
   MockSceneState,
   CreateLightPayload,
+  CreateObjectGridPayload,
   CreateObjectPayload,
   EditObjectPayload,
   EditTransformPayload,
   ImportModelPayload,
   ObjectTransformPayload,
+  PartialTransformPayload,
+  RenameObjectPayload,
   SceneObjectCategory,
   SceneObjectDetails,
   SceneObjectSummary,
@@ -274,8 +277,8 @@ const createLight = (
       intensity: payload.intensity,
       color: { ...payload.color },
       colorHex: payload.colorHex,
-      range: 10,
-      spotAngle: payload.type === "spot" ? 30 : undefined
+      range: payload.range ?? 10,
+      spotAngle: payload.type === "spot" ? payload.spotAngle ?? 30 : undefined
     }
   };
 
@@ -351,6 +354,53 @@ export const mockUnityClient = {
 
   createObject(payload: CreateObjectPayload): UnityActionResponse {
     return createObject(payload);
+  },
+
+  createObjectGrid(payload: CreateObjectGridPayload): UnityActionResponse {
+    const sceneError = ensureScene();
+    if (sceneError) {
+      return sceneError;
+    }
+
+    const total = payload.rows * payload.columns;
+    const created: MockObject[] = [];
+
+    for (let row = 0; row < payload.rows; row += 1) {
+      for (let column = 0; column < payload.columns; column += 1) {
+        const index = row * payload.columns + column + 1;
+        const requestedName =
+          total === 1 ? payload.baseName : `${payload.baseName}_${index}`;
+        const finalName = nextObjectName(requestedName);
+        const object: MockObject = {
+          instanceId: nextInstanceId++,
+          name: finalName,
+          type: payload.type,
+          position: {
+            x: payload.startPosition.x + column * payload.spacing,
+            y: payload.startPosition.y,
+            z: payload.startPosition.z + row * payload.spacing
+          },
+          rotation: { ...payload.rotation },
+          scale: { ...payload.scale }
+        };
+
+        state.objects.push(object);
+        created.push(object);
+      }
+    }
+
+    return mockSuccess(
+      "createObjectGrid",
+      `Mock ${payload.rows}x${payload.columns} ${payload.type} grid created with ${created.length} objects.`,
+      {
+        count: created.length,
+        rows: payload.rows,
+        columns: payload.columns,
+        firstNames: created.slice(0, 8).map((object) => object.name),
+        lastNames: created.slice(-8).map((object) => object.name),
+        state: cloneState()
+      }
+    );
   },
 
   createLight(payload: CreateLightPayload): UnityActionResponse {
@@ -559,6 +609,60 @@ export const mockUnityClient = {
 
     return mockSuccess("editObject", `Mock object ${object.name} updated.`, {
       object: sceneObjectDetails(object),
+      state: cloneState()
+    });
+  },
+
+  editPartialTransform(payload: PartialTransformPayload): UnityActionResponse {
+    const sceneError = ensureScene();
+    if (sceneError) {
+      return sceneError;
+    }
+
+    const object = findObjectByInstanceId(payload.instanceId);
+    if (!object) {
+      return mockError("Object no longer exists. Refresh scene objects.");
+    }
+
+    if (payload.position) {
+      object.position = { ...payload.position };
+    }
+    if (payload.rotation) {
+      object.rotation = { ...payload.rotation };
+    }
+    if (payload.scale) {
+      object.scale = { ...payload.scale };
+    }
+
+    return mockSuccess(
+      "editPartialTransform",
+      `Mock transform updated for ${object.name}.`,
+      {
+        object: sceneObjectDetails(object),
+        state: cloneState()
+      }
+    );
+  },
+
+  renameObject(payload: RenameObjectPayload): UnityActionResponse {
+    const sceneError = ensureScene();
+    if (sceneError) {
+      return sceneError;
+    }
+
+    const object = findObjectByInstanceId(payload.instanceId);
+    if (!object) {
+      return mockError("Object no longer exists. Refresh scene objects.");
+    }
+
+    const requestedName = payload.name.trim();
+    const finalName = nextObjectNameExcluding(requestedName, payload.instanceId);
+    object.name = finalName;
+
+    return mockSuccess("renameObject", `Mock object renamed to ${finalName}.`, {
+      object: sceneObjectDetails(object),
+      requestedName,
+      finalName,
       state: cloneState()
     });
   },

@@ -439,6 +439,34 @@ export const validateCreateLightPayload = (
     details.push("color must be #RRGGBB or #RRGGBBAA.");
   }
 
+  let range: number | undefined;
+  if (body.range !== undefined) {
+    const parsedRange = parseFiniteNumber(body.range);
+    if (parsedRange === undefined) {
+      details.push("range must be a finite number.");
+    } else if (parsedRange <= 0) {
+      details.push("range must be greater than 0.");
+    } else if (type === "directional") {
+      details.push("range can only be set on point or spot lights.");
+    } else {
+      range = parsedRange;
+    }
+  }
+
+  let spotAngle: number | undefined;
+  if (body.spotAngle !== undefined) {
+    const parsedSpotAngle = parseFiniteNumber(body.spotAngle);
+    if (parsedSpotAngle === undefined) {
+      details.push("spotAngle must be a finite number.");
+    } else if (parsedSpotAngle <= 0 || parsedSpotAngle > 179) {
+      details.push("spotAngle must be greater than 0 and less than or equal to 179.");
+    } else if (type !== "spot") {
+      details.push("spotAngle can only be set on spot lights.");
+    } else {
+      spotAngle = parsedSpotAngle;
+    }
+  }
+
   if (
     details.length > 0 ||
     !position ||
@@ -461,7 +489,9 @@ export const validateCreateLightPayload = (
       rotation,
       intensity,
       color,
-      colorHex
+      colorHex,
+      ...(range !== undefined ? { range } : {}),
+      ...(spotAngle !== undefined ? { spotAngle } : {})
     }
   };
 };

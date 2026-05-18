@@ -3,11 +3,14 @@ import { mcpUnityClient } from "./mcpUnityClient.js";
 import { mockUnityClient } from "./mockUnityClient.js";
 import type {
   CreateLightPayload,
+  CreateObjectGridPayload,
   CreateObjectPayload,
   EditObjectPayload,
   EditTransformPayload,
   ImportModelPayload,
   ObjectTransformPayload,
+  PartialTransformPayload,
+  RenameObjectPayload,
   UnityAction,
   UnityActionErrorResponse,
   UnityActionResponse
@@ -52,6 +55,14 @@ export const unityClient = {
       : mockUnityClient.createObject(payload);
   },
 
+  createObjectGrid(
+    payload: CreateObjectGridPayload
+  ): Promise<UnityActionResponse> | UnityActionResponse {
+    return isMcpMode()
+      ? mcpUnityClient.createObjectGrid(payload)
+      : mockUnityClient.createObjectGrid(payload);
+  },
+
   createLight(payload: CreateLightPayload): Promise<UnityActionResponse> | UnityActionResponse {
     return isMcpMode()
       ? mcpUnityClient.createLight(payload)
@@ -92,6 +103,20 @@ export const unityClient = {
     return isMcpMode()
       ? mcpUnityClient.editObject(payload)
       : mockUnityClient.editObject(payload);
+  },
+
+  editPartialTransform(
+    payload: PartialTransformPayload
+  ): Promise<UnityActionResponse> | UnityActionResponse {
+    return isMcpMode()
+      ? mcpUnityClient.editPartialTransform(payload)
+      : mockUnityClient.editPartialTransform(payload);
+  },
+
+  renameObject(payload: RenameObjectPayload): Promise<UnityActionResponse> | UnityActionResponse {
+    return isMcpMode()
+      ? mcpUnityClient.renameObject(payload)
+      : mockUnityClient.renameObject(payload);
   },
 
   saveScene(): Promise<UnityActionResponse> | UnityActionResponse {

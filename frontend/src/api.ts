@@ -1,4 +1,6 @@
 import type {
+  ChatAttachmentResponse,
+  ChatResponse,
   CreateLightPayload,
   CreateObjectPayload,
   EditObjectPayload,
@@ -47,6 +49,24 @@ const requestForm = async <T>(path: string, formData: FormData): Promise<T> => {
 export const api = {
   health(): Promise<HealthResponse> {
     return requestJson<HealthResponse>("/api/health");
+  },
+
+  sendChat(sessionId: string, message: string): Promise<ChatResponse> {
+    return requestJson<ChatResponse>("/api/chat", {
+      method: "POST",
+      body: JSON.stringify({ sessionId, message })
+    });
+  },
+
+  uploadChatAttachment(
+    sessionId: string,
+    file: File
+  ): Promise<ChatAttachmentResponse> {
+    const formData = new FormData();
+    formData.append("sessionId", sessionId);
+    formData.append("file", file);
+
+    return requestForm<ChatAttachmentResponse>("/api/chat/attachments", formData);
   },
 
   createScene(): Promise<UnityActionResponse> {

@@ -18,6 +18,18 @@ export interface EditTransformPayload {
   scale: Vector3;
 }
 
+export interface PartialTransformPayload {
+  instanceId: number;
+  position?: Vector3;
+  rotation?: Vector3;
+  scale?: Vector3;
+}
+
+export interface RenameObjectPayload {
+  instanceId: number;
+  name: string;
+}
+
 export interface ColorRGBA {
   r: number;
   g: number;
@@ -50,6 +62,17 @@ export interface CreateObjectPayload {
   rotation: Vector3;
   scale: Vector3;
   texture?: UploadedTextureFile;
+}
+
+export interface CreateObjectGridPayload {
+  type: UnityDefaultObjectType;
+  baseName: string;
+  rows: number;
+  columns: number;
+  spacing: number;
+  startPosition: Vector3;
+  rotation: Vector3;
+  scale: Vector3;
 }
 
 export type ModelFileExtension = ".fbx" | ".obj";
@@ -92,6 +115,8 @@ export interface CreateLightPayload {
   intensity: number;
   color: ColorRGBA;
   colorHex: string;
+  range?: number;
+  spotAngle?: number;
 }
 
 export interface MockLightData {
@@ -172,11 +197,14 @@ export type UnityClientMode = "mock" | "mcp";
 export type UnityAction =
   | "createScene"
   | "createObject"
+  | "createObjectGrid"
   | "createLight"
   | "importModel"
   | "listSceneObjects"
   | "getSceneObject"
   | "editObject"
+  | "editPartialTransform"
+  | "renameObject"
   | "addCube"
   | "addSphere"
   | "addLight"

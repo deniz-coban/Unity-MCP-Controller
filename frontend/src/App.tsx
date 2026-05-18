@@ -2,6 +2,9 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type {
   BackendMode,
+  ChatAttachment,
+  ChatMessage,
+  ChatToolCall,
   CreateLightPayload,
   CreateObjectPayload,
   EditObjectPayload,
@@ -20,6 +23,23 @@ interface LogEntry {
   title: string;
   details?: string[];
 }
+
+const chatSessionStorageKey = "unity-mcp-controller-chat-session-id";
+
+const getInitialChatSessionId = (): string => {
+  const existing = window.localStorage.getItem(chatSessionStorageKey);
+
+  if (existing) {
+    return existing;
+  }
+
+  const next =
+    typeof window.crypto?.randomUUID === "function"
+      ? window.crypto.randomUUID()
+      : `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  window.localStorage.setItem(chatSessionStorageKey, next);
+  return next;
+};
 
 const defaultCreateObjectValues = {
   type: "cube" as UnityDefaultObjectType,
@@ -551,9 +571,26 @@ export default function App() {
   const createTextureInputRef = useRef<HTMLInputElement>(null);
   const modelFileInputRef = useRef<HTMLInputElement>(null);
   const modelTextureInputRef = useRef<HTMLInputElement>(null);
+  const chatAttachmentInputRef = useRef<HTMLInputElement>(null);
   const [backendStatus, setBackendStatus] = useState<BackendStatus>("checking");
   const [backendMode, setBackendMode] = useState<BackendMode>("mock");
   const [isBusy, setIsBusy] = useState(false);
+  const [isDashboardOpen, setIsDashboardOpen] = useState(false);
+  const [isChatBusy, setIsChatBusy] = useState(false);
+  const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
+  const [chatSessionId, setChatSessionId] = useState(getInitialChatSessionId);
+  const [chatInput, setChatInput] = useState("");
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
+    {
+      id: "welcome",
+      role: "assistant",
+      content:
+        "Describe what you want to build in Unity. I can call safe scene tools and show each tool call here.",
+      createdAt: Date.now()
+    }
+  ]);
+  const [chatToolCalls, setChatToolCalls] = useState<ChatToolCall[]>([]);
+  const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
   const [createObjectValues, setCreateObjectValues] = useState(
     defaultCreateObjectValues
   );
@@ -614,6 +651,7 @@ export default function App() {
 
     return objects.slice(0, 12);
   }, [sceneObjectSearch, sceneObjects]);
+  const recentManualLogs = useMemo(() => logs.slice(0, 5), [logs]);
 
   const addLog = (entry: Omit<LogEntry, "id">) => {
     setLogs((current) => [
@@ -899,18 +937,273 @@ export default function App() {
     void runAction("Add model", () => api.importModel(formData));
   };
 
+  const uploadChatAttachment = async (file: File) => {
+    setIsUploadingAttachment(true);
+
+    try {
+      const response = await api.uploadChatAttachment(chatSessionId, file);
+      setChatSessionId(response.sessionId);
+      window.localStorage.setItem(chatSessionStorageKey, response.sessionId);
+      setChatAttachments(response.attachments);
+      addLog({
+        tone: "success",
+        title: "Chat attachment uploaded",
+        details: [`${response.attachment.originalName} is available to chat as ${response.attachment.id}.`]
+      });
+    } catch (error) {
+      addLog({
+        tone: "error",
+        title: "Chat attachment upload failed",
+        details: formatError(error)
+      });
+    } finally {
+      setIsUploadingAttachment(false);
+      if (chatAttachmentInputRef.current) {
+        chatAttachmentInputRef.current.value = "";
+      }
+    }
+  };
+
+  const submitChat = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    const message = chatInput.trim();
+
+    if (!message || isChatBusy) {
+      return;
+    }
+
+    const optimisticUserMessage: ChatMessage = {
+      id: `local-${Date.now()}`,
+      role: "user",
+      content: message,
+      createdAt: Date.now()
+    };
+
+    setChatInput("");
+    setChatMessages((current) => [...current, optimisticUserMessage]);
+    setIsChatBusy(true);
+
+    void api
+      .sendChat(chatSessionId, message)
+      .then((response) => {
+        setChatSessionId(response.sessionId);
+        window.localStorage.setItem(chatSessionStorageKey, response.sessionId);
+        setChatMessages(response.messages.length ? response.messages : [optimisticUserMessage]);
+        setChatToolCalls((current) => [...response.toolCalls, ...current].slice(0, 80));
+        setChatAttachments(response.attachments);
+
+        if (response.toolCalls.length > 0) {
+          addLog({
+            tone: response.toolCalls.some((toolCall) => toolCall.status === "error")
+              ? "error"
+              : "success",
+            title: "Chat tool calls completed",
+            details: response.toolCalls.map(
+              (toolCall) =>
+                `${toolCall.toolName}: ${toolCall.status}${
+                  toolCall.result || toolCall.error
+                    ? ` - ${toolCall.result ?? toolCall.error}`
+                    : ""
+                }`
+            )
+          });
+        }
+      })
+      .catch((error) => {
+        setChatMessages((current) => [
+          ...current,
+          {
+            id: `error-${Date.now()}`,
+            role: "assistant",
+            content: formatError(error).join("\n"),
+            createdAt: Date.now()
+          }
+        ]);
+        addLog({
+          tone: "error",
+          title: "Chat request failed",
+          details: formatError(error)
+        });
+      })
+      .finally(() => {
+        setIsChatBusy(false);
+      });
+  };
+
+  const formatToolArguments = (value: unknown): string => {
+    if (!value || (typeof value === "object" && Object.keys(value).length === 0)) {
+      return "No arguments";
+    }
+
+    try {
+      const text = JSON.stringify(value);
+      return text.length > 180 ? `${text.slice(0, 180)}...` : text;
+    } catch {
+      return String(value);
+    }
+  };
+
   return (
-    <main className="app-shell">
-      <section className="top-bar">
+    <main className="app-shell chat-app-shell">
+      <section className="top-bar app-header">
         <div>
           <p className="eyebrow">{modeEyebrow}</p>
           <h1>Unity MCP Controller</h1>
         </div>
-        <button className={`status-pill ${backendStatus}`} onClick={checkBackend}>
-          <span />
-          {statusLabel}
-        </button>
+        <div className="header-actions">
+          <button
+            className="manual-tools-button"
+            onClick={() => setIsDashboardOpen(true)}
+            type="button"
+          >
+            Manual tools
+          </button>
+          <button className={`status-pill ${backendStatus}`} onClick={checkBackend}>
+            <span />
+            {statusLabel}
+          </button>
+        </div>
       </section>
+
+      <section className="chat-workspace">
+        <section className="chat-panel">
+          <div className="chat-panel-heading">
+            <div>
+              <p className="eyebrow">AI SCENE BUILDER</p>
+              <h2>Tell Unity what to build</h2>
+            </div>
+            <p>{sceneActionSubtitle}</p>
+          </div>
+          <div className="chat-history" aria-live="polite">
+            {chatMessages.map((message) => (
+              <article className={`chat-message ${message.role}`} key={message.id}>
+                <span>{message.role === "user" ? "You" : "Assistant"}</span>
+                <p>{message.content}</p>
+              </article>
+            ))}
+            {isChatBusy ? (
+              <article className="chat-message assistant pending">
+                <span>Assistant</span>
+                <p>
+                  <span className="spinner" /> Thinking and calling Unity tools...
+                </p>
+              </article>
+            ) : null}
+          </div>
+          <div className="chat-attachments">
+            <div>
+              <strong>Attachments</strong>
+              <span>
+                Upload a model or texture, then reference it in chat. Files stay local
+                to this backend session.
+              </span>
+            </div>
+            <div className="file-input-row">
+              <input
+                accept=".fbx,.obj,.png,.jpg,.jpeg"
+                aria-label="Chat attachment"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) {
+                    void uploadChatAttachment(file);
+                  }
+                }}
+                ref={chatAttachmentInputRef}
+                type="file"
+              />
+              <button disabled={isUploadingAttachment} type="button">
+                {isUploadingAttachment ? "Uploading..." : "Attach"}
+              </button>
+            </div>
+            {chatAttachments.length > 0 ? (
+              <div className="attachment-list">
+                {chatAttachments.map((attachment) => (
+                  <span key={attachment.id}>
+                    {attachment.kind}: {attachment.originalName}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <form className="chat-input-row" onSubmit={submitChat}>
+            <textarea
+              disabled={isChatBusy}
+              onChange={(event) => setChatInput(event.target.value)}
+              placeholder="Describe what you want to build in Unity..."
+              value={chatInput}
+            />
+            <button disabled={isChatBusy || !chatInput.trim()} type="submit">
+              {isChatBusy ? (
+                <>
+                  <span className="spinner" /> Sending
+                </>
+              ) : (
+                "Send"
+              )}
+            </button>
+          </form>
+        </section>
+
+        <aside className="activity-panel">
+          <div className="panel-heading">
+            <h2>Tool-call log</h2>
+            <p>High-level app tools only. Raw Unity MCP tools stay hidden.</p>
+          </div>
+          <div className="activity-list">
+            {chatToolCalls.length === 0 ? (
+              <p className="empty-log">No chat tool calls yet.</p>
+            ) : (
+              chatToolCalls.slice(0, 12).map((toolCall) => (
+                <article className={`activity-entry ${toolCall.status}`} key={toolCall.id}>
+                  <div>
+                    <strong>{toolCall.toolName}</strong>
+                    <span>{toolCall.status}</span>
+                  </div>
+                  <code>{formatToolArguments(toolCall.arguments)}</code>
+                  <p>{toolCall.result ?? toolCall.error ?? "Running..."}</p>
+                </article>
+              ))
+            )}
+          </div>
+          <div className="recent-manual-log">
+            <h2>Recent activity</h2>
+            {recentManualLogs.length === 0 ? (
+              <p className="empty-log">No manual activity.</p>
+            ) : (
+              recentManualLogs.map((log) => (
+                <article className={`mini-log ${log.tone}`} key={log.id}>
+                  <strong>{log.title}</strong>
+                  {log.details?.[0] ? <span>{log.details[0]}</span> : null}
+                </article>
+              ))
+            )}
+          </div>
+        </aside>
+      </section>
+
+      <button
+        aria-label="Close manual tools"
+        className={`drawer-backdrop ${isDashboardOpen ? "open" : ""}`}
+        onClick={() => setIsDashboardOpen(false)}
+        type="button"
+      />
+
+      <aside className={`manual-drawer ${isDashboardOpen ? "open" : ""}`}>
+        <div className="drawer-header">
+          <div>
+            <p className="eyebrow">DEBUG DASHBOARD</p>
+            <h2>Manual Unity tools</h2>
+          </div>
+          <button
+            className="secondary-button"
+            onClick={() => setIsDashboardOpen(false)}
+            type="button"
+          >
+            Close
+          </button>
+        </div>
+        <div className="drawer-scroll">
 
       <section className="panel">
         <div className="panel-heading">
@@ -1717,6 +2010,8 @@ export default function App() {
           )}
         </div>
       </section>
+        </div>
+      </aside>
     </main>
   );
 }

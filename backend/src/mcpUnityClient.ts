@@ -12,10 +12,13 @@ import { isMcpConfigured, unityConfig } from "./config.js";
 import type {
   ColorRGBA,
   CreateLightPayload,
+  CreateObjectGridPayload,
   CreateObjectPayload,
   EditObjectPayload,
   EditTransformPayload,
   ImportModelPayload,
+  PartialTransformPayload,
+  RenameObjectPayload,
   SceneObjectCategory,
   SceneObjectDetails,
   SceneObjectLightDetails,
@@ -124,6 +127,17 @@ interface MaterialAssignmentResult {
   failures: string[];
 }
 
+interface BatchOperation {
+  tool: string;
+  params: Record<string, unknown>;
+  id: string;
+}
+
+interface GridObjectItem {
+  name: string;
+  position: CreateObjectGridPayload["startPosition"];
+}
+
 const hierarchyResourceUri = "unity://scenes_hierarchy";
 const menuItemsResourceUri = "unity://menu-items";
 
@@ -157,13 +171,17 @@ const getChildEnv = (): Record<string, string> => {
   return env;
 };
 
-const withTimeout = async <T>(promise: Promise<T>, label: string): Promise<T> => {
+const withTimeout = async <T>(
+  promise: Promise<T>,
+  label: string,
+  timeoutMs = unityConfig.mcp.timeoutMs
+): Promise<T> => {
   let timeout: NodeJS.Timeout | undefined;
 
   const timeoutPromise = new Promise<never>((_resolve, reject) => {
     timeout = setTimeout(() => {
-      reject(new Error(`${label} timed out after ${unityConfig.mcp.timeoutMs}ms.`));
-    }, unityConfig.mcp.timeoutMs);
+      reject(new Error(`${label} timed out after ${timeoutMs}ms.`));
+    }, timeoutMs);
   });
 
   try {
@@ -174,6 +192,9 @@ const withTimeout = async <T>(promise: Promise<T>, label: string): Promise<T> =>
     }
   }
 };
+
+const hierarchyReadTimeoutMs = (): number =>
+  Math.max(unityConfig.mcp.timeoutMs, 30000);
 
 const extractTextContent = (result: unknown): string => {
   if (!result || typeof result !== "object" || !("content" in result)) {
@@ -232,6 +253,7 @@ class McpUnityClient {
   private verifiedEditTransformTools = false;
   private verifiedSaveSceneTool = false;
   private verifiedCreateLightTools = false;
+  private verifiedCreateObjectGridTools = false;
   private verifiedSceneObjectReadTools = false;
   private verifiedEditObjectTools = false;
   private canRefreshAssets = false;
@@ -503,6 +525,121 @@ class McpUnityClient {
     }
   }
 
+  async createObjectGrid(
+    payload: CreateObjectGridPayload
+  ): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
+    if (!isMcpConfigured()) {
+      return configurationError([
+        "Set UNITY_MCP_SERVER_ARGS to the absolute path of mcp-unity/Server~/build/index.js.",
+        "UNITY_MCP_SERVER_COMMAND defaults to node."
+      ]);
+    }
+
+    const total = payload.rows * payload.columns;
+
+    try {
+      const client = await this.connect();
+      await this.verifyCreateObjectGridTools(client);
+
+      const beforeObjects = await this.readHierarchyObjects(
+        client,
+        this.gridBatchTimeoutMs(total)
+      );
+      const beforeIds = new Set(beforeObjects.map((object) => object.instanceId));
+      const reservedNames = new Set(beforeObjects.map((object) => object.name));
+      const gridItems = this.buildGridItems(payload, reservedNames);
+      const createOperations = gridItems.map((_item, index) => ({
+        tool: unityConfig.mcp.addCubeTool,
+        params: {
+          [unityConfig.mcp.addCubeArgumentName]: objectMenuPaths[payload.type]
+        },
+        id: `create-${index + 1}`
+      }));
+
+      await this.callBatchOperations(client, createOperations, "Creating Unity grid primitives");
+
+      const newObjects = await this.waitForNewHierarchyObjects(
+        client,
+        beforeIds,
+        total
+      );
+
+      if (newObjects.length !== total) {
+        return {
+          ok: false,
+          error: "Unity/MCP grid creation could not safely identify every new object.",
+          details: [
+            `Expected ${total} new objects, but found ${newObjects.length}.`,
+            "No existing object was renamed or transformed.",
+            "If Unity is still processing the objects, refresh the scene object list before retrying."
+          ]
+        };
+      }
+
+      const updateOperations = gridItems.flatMap((item, index) => {
+        const instanceId = newObjects[index].instanceId;
+
+        return [
+          {
+            tool: "update_gameobject",
+            params: {
+              instanceId,
+              gameObjectData: {
+                name: item.name
+              }
+            },
+            id: `rename-${index + 1}`
+          },
+          {
+            tool: "set_transform",
+            params: {
+              instanceId,
+              position: item.position,
+              rotation: payload.rotation,
+              scale: payload.scale,
+              space: "world"
+            },
+            id: `transform-${index + 1}`
+          }
+        ];
+      });
+
+      await this.callBatchOperations(
+        client,
+        updateOperations,
+        "Renaming and transforming Unity grid objects"
+      );
+
+      return {
+        ok: true,
+        mode: "mcp",
+        action: "createObjectGrid",
+        message: `Created ${total} ${payload.type} objects in a ${payload.rows}x${payload.columns} grid.`,
+        data: {
+          count: total,
+          rows: payload.rows,
+          columns: payload.columns,
+          firstNames: gridItems.slice(0, 8).map((item) => item.name),
+          lastNames: gridItems.slice(-8).map((item) => item.name),
+          firstInstanceIds: newObjects.slice(0, 8).map((object) => object.instanceId),
+          lastInstanceIds: newObjects.slice(-8).map((object) => object.instanceId)
+        }
+      };
+    } catch (error) {
+      await this.reset();
+      return {
+        ok: false,
+        error: "Unity/MCP create object grid failed.",
+        details: [
+          "The optimized grid path uses Unity MCP batch_execute internally to reduce timeout risk.",
+          "Open Tools > MCP Unity > Server Window and confirm it is still running.",
+          "If Unity is busy after a large batch, wait a few seconds and retry with a smaller grid.",
+          `Original error: ${getErrorMessage(error)}`
+        ]
+      };
+    }
+  }
+
   async createLight(
     payload: CreateLightPayload
   ): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
@@ -570,18 +707,27 @@ class McpUnityClient {
       );
 
       try {
+        const componentData: Record<string, unknown> = {
+          intensity: payload.intensity,
+          color: payload.color
+        };
+
+        if (payload.range !== undefined) {
+          componentData.range = payload.range;
+        }
+        if (payload.spotAngle !== undefined) {
+          componentData.spotAngle = payload.spotAngle;
+        }
+
         await this.callTool(
           client,
           "update_component",
           {
             instanceId: newInstanceId,
             componentName: "Light",
-            componentData: {
-              intensity: payload.intensity,
-              color: payload.color
-            }
+            componentData
           },
-          "Setting Unity light intensity and color"
+          "Setting Unity light fields"
         );
       } catch (error) {
         return {
@@ -1036,6 +1182,188 @@ class McpUnityClient {
     }
   }
 
+  async editPartialTransform(
+    payload: PartialTransformPayload
+  ): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
+    if (!isMcpConfigured()) {
+      return configurationError([
+        "Set UNITY_MCP_SERVER_ARGS to the absolute path of mcp-unity/Server~/build/index.js.",
+        "UNITY_MCP_SERVER_COMMAND defaults to node."
+      ]);
+    }
+
+    try {
+      const client = await this.connect();
+      await this.verifyEditTransformTools(client);
+
+      const summary = await this.findSceneObjectSummary(client, payload.instanceId);
+      if (!summary) {
+        return {
+          ok: false,
+          error: "Object no longer exists. Refresh scene objects."
+        };
+      }
+
+      const beforeDetails = await this.readSceneObjectDetails(client, summary);
+      const transformArgs: Record<string, unknown> = {
+        instanceId: payload.instanceId,
+        position: payload.position ?? beforeDetails.position,
+        rotation: payload.rotation ?? beforeDetails.rotation,
+        scale: payload.scale ?? beforeDetails.scale,
+        space: "world"
+      };
+
+      if (
+        !payload.position &&
+        !payload.rotation &&
+        !payload.scale
+      ) {
+        return {
+          ok: false,
+          error: "At least one transform field is required."
+        };
+      }
+
+      await this.callTool(
+        client,
+        "set_transform",
+        transformArgs,
+        "Setting Unity partial transform"
+      );
+
+      const refreshedSummary = await this.findSceneObjectSummary(
+        client,
+        payload.instanceId
+      );
+
+      if (!refreshedSummary) {
+        return {
+          ok: false,
+          error: "Object no longer exists. Refresh scene objects."
+        };
+      }
+
+      const object = await this.readSceneObjectDetails(client, refreshedSummary);
+
+      return {
+        ok: true,
+        mode: "mcp",
+        action: "editPartialTransform",
+        message: `Updated transform for "${object.name}" in Unity.`,
+        data: {
+          object,
+          changed: {
+            ...(payload.position ? { position: payload.position } : {}),
+            ...(payload.rotation ? { rotation: payload.rotation } : {}),
+            ...(payload.scale ? { scale: payload.scale } : {})
+          }
+        }
+      };
+    } catch (error) {
+      await this.reset();
+      return {
+        ok: false,
+        error: "Unity/MCP partial transform edit failed.",
+        details: [
+          "Open the UnityMCPDemo project in Unity Editor.",
+          "Open Tools > MCP Unity > Server Window and click Start Server.",
+          "The chat transform tools only send the specific transform field being changed.",
+          `Original error: ${getErrorMessage(error)}`
+        ]
+      };
+    }
+  }
+
+  async renameObject(
+    payload: RenameObjectPayload
+  ): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
+    if (!isMcpConfigured()) {
+      return configurationError([
+        "Set UNITY_MCP_SERVER_ARGS to the absolute path of mcp-unity/Server~/build/index.js.",
+        "UNITY_MCP_SERVER_COMMAND defaults to node."
+      ]);
+    }
+
+    try {
+      const client = await this.connect();
+      await this.verifyEditObjectTools(client);
+
+      const summaries = await this.readSceneObjectSummaries(client);
+      const summary = summaries.find((object) => object.instanceId === payload.instanceId);
+
+      if (!summary) {
+        return {
+          ok: false,
+          error: "Object no longer exists. Refresh scene objects."
+        };
+      }
+
+      const beforeDetails = await this.readSceneObjectDetails(client, summary);
+      const requestedName = payload.name.trim();
+      const finalName = this.nextAvailableNameExcluding(
+        requestedName,
+        summaries,
+        payload.instanceId
+      );
+
+      if (finalName !== beforeDetails.name) {
+        await this.callTool(
+          client,
+          "update_gameobject",
+          {
+            instanceId: payload.instanceId,
+            gameObjectData: {
+              name: finalName
+            }
+          },
+          "Renaming Unity object"
+        );
+      }
+
+      const refreshedSummary = await this.findSceneObjectSummary(
+        client,
+        payload.instanceId
+      );
+
+      if (!refreshedSummary) {
+        return {
+          ok: false,
+          error: "Object no longer exists. Refresh scene objects."
+        };
+      }
+
+      const object = await this.readSceneObjectDetails(client, refreshedSummary);
+      const renamedMessage =
+        finalName !== requestedName
+          ? ` Requested name "${requestedName}" was already in use, so Unity object was renamed to "${finalName}".`
+          : "";
+
+      return {
+        ok: true,
+        mode: "mcp",
+        action: "renameObject",
+        message: `Renamed object to "${object.name}" in Unity.${renamedMessage}`,
+        data: {
+          object,
+          requestedName,
+          finalName
+        }
+      };
+    } catch (error) {
+      await this.reset();
+      return {
+        ok: false,
+        error: "Unity/MCP rename object failed.",
+        details: [
+          "Open the UnityMCPDemo project in Unity Editor.",
+          "Open Tools > MCP Unity > Server Window and click Start Server.",
+          "The chat rename tool only updates the object name and preserves transform fields.",
+          `Original error: ${getErrorMessage(error)}`
+        ]
+      };
+    }
+  }
+
   async saveScene(): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
     if (!isMcpConfigured()) {
       return configurationError([
@@ -1165,6 +1493,40 @@ class McpUnityClient {
     }
 
     this.verifiedCreateObjectTools = true;
+  }
+
+  private async verifyCreateObjectGridTools(client: Client): Promise<void> {
+    if (this.verifiedCreateObjectGridTools) {
+      return;
+    }
+
+    const [toolsResult, resourcesResult] = await Promise.all([
+      withTimeout(
+        client.request({ method: "tools/list" }, ListToolsResultSchema),
+        "Listing Unity MCP tools"
+      ),
+      withTimeout(
+        client.request({ method: "resources/list" }, ListResourcesResultSchema),
+        "Listing Unity MCP resources"
+      )
+    ]);
+
+    this.assertToolExists(toolsResult.tools, "batch_execute");
+    this.assertToolStringArgument(
+      toolsResult.tools,
+      unityConfig.mcp.addCubeTool,
+      unityConfig.mcp.addCubeArgumentName
+    );
+    this.assertToolObjectArgument(toolsResult.tools, "update_gameobject", "gameObjectData");
+    this.assertToolObjectArgument(toolsResult.tools, "set_transform", "position");
+    this.assertToolObjectArgument(toolsResult.tools, "set_transform", "rotation");
+    this.assertToolObjectArgument(toolsResult.tools, "set_transform", "scale");
+
+    if (!resourcesResult.resources.some((resource) => resource.uri === hierarchyResourceUri)) {
+      throw new Error(`MCP resource "${hierarchyResourceUri}" was not found.`);
+    }
+
+    this.verifiedCreateObjectGridTools = true;
   }
 
   private async verifyImportModelTools(client: Client): Promise<void> {
@@ -1450,7 +1812,8 @@ class McpUnityClient {
     client: Client,
     name: string,
     toolArguments: Record<string, unknown>,
-    label: string
+    label: string,
+    timeoutMs = unityConfig.mcp.timeoutMs
   ): Promise<ToolCallResponse> {
     const result = await withTimeout(
       client.request(
@@ -1463,7 +1826,8 @@ class McpUnityClient {
         },
         CallToolResultSchema
       ),
-      label
+      label,
+      timeoutMs
     );
 
     const resultText = extractTextContent(result);
@@ -1476,6 +1840,103 @@ class McpUnityClient {
       text: resultText,
       raw: result
     };
+  }
+
+  private gridBatchTimeoutMs(operationCount: number): number {
+    return Math.min(
+      Math.max(unityConfig.mcp.timeoutMs, 20000 + operationCount * 750),
+      180000
+    );
+  }
+
+  private chunkOperations(
+    operations: BatchOperation[],
+    maxOperations = 100
+  ): BatchOperation[][] {
+    const chunks: BatchOperation[][] = [];
+
+    for (let index = 0; index < operations.length; index += maxOperations) {
+      chunks.push(operations.slice(index, index + maxOperations));
+    }
+
+    return chunks;
+  }
+
+  private async callBatchOperations(
+    client: Client,
+    operations: BatchOperation[],
+    label: string
+  ): Promise<void> {
+    const chunks = this.chunkOperations(operations);
+
+    for (let index = 0; index < chunks.length; index += 1) {
+      const chunk = chunks[index];
+      await this.callTool(
+        client,
+        "batch_execute",
+        {
+          operations: chunk,
+          stopOnError: true,
+          atomic: false
+        },
+        chunks.length > 1 ? `${label} (${index + 1}/${chunks.length})` : label,
+        this.gridBatchTimeoutMs(chunk.length)
+      );
+    }
+  }
+
+  private buildGridItems(
+    payload: CreateObjectGridPayload,
+    reservedNames: Set<string>
+  ): GridObjectItem[] {
+    const total = payload.rows * payload.columns;
+    const items: GridObjectItem[] = [];
+
+    for (let row = 0; row < payload.rows; row += 1) {
+      for (let column = 0; column < payload.columns; column += 1) {
+        const index = row * payload.columns + column + 1;
+        const requestedName =
+          total === 1 ? payload.baseName : `${payload.baseName}_${index}`;
+        const name = this.nextAvailableName(requestedName, reservedNames);
+
+        reservedNames.add(name);
+        items.push({
+          name,
+          position: {
+            x: payload.startPosition.x + column * payload.spacing,
+            y: payload.startPosition.y,
+            z: payload.startPosition.z + row * payload.spacing
+          }
+        });
+      }
+    }
+
+    return items;
+  }
+
+  private async waitForNewHierarchyObjects(
+    client: Client,
+    beforeIds: Set<number>,
+    expectedCount: number
+  ): Promise<FlattenedHierarchyObject[]> {
+    const deadline = Date.now() + this.gridBatchTimeoutMs(expectedCount);
+    let latestNewObjects: FlattenedHierarchyObject[] = [];
+
+    while (Date.now() <= deadline) {
+      const objects = await this.readHierarchyObjects(
+        client,
+        this.gridBatchTimeoutMs(expectedCount)
+      );
+      latestNewObjects = objects.filter((object) => !beforeIds.has(object.instanceId));
+
+      if (latestNewObjects.length >= expectedCount) {
+        return latestNewObjects;
+      }
+
+      await delay(250);
+    }
+
+    return latestNewObjects;
   }
 
   private async getUnityProjectPaths(): Promise<
@@ -2154,7 +2615,10 @@ class McpUnityClient {
     return `${baseName}_${index}`;
   }
 
-  private async readHierarchyJson(client: Client): Promise<unknown> {
+  private async readHierarchyJson(
+    client: Client,
+    timeoutMs = hierarchyReadTimeoutMs()
+  ): Promise<unknown> {
     const result = await withTimeout(
       client.request(
         {
@@ -2165,7 +2629,8 @@ class McpUnityClient {
         },
         ReadResourceResultSchema
       ),
-      "Reading Unity scene hierarchy"
+      "Reading Unity scene hierarchy",
+      timeoutMs
     );
 
     const text = result.contents
@@ -2179,8 +2644,11 @@ class McpUnityClient {
     return JSON.parse(text) as unknown;
   }
 
-  private async readHierarchyObjects(client: Client): Promise<FlattenedHierarchyObject[]> {
-    return this.extractHierarchyObjects(await this.readHierarchyJson(client));
+  private async readHierarchyObjects(
+    client: Client,
+    timeoutMs = hierarchyReadTimeoutMs()
+  ): Promise<FlattenedHierarchyObject[]> {
+    return this.extractHierarchyObjects(await this.readHierarchyJson(client, timeoutMs));
   }
 
   private async readSceneObjectSummaries(client: Client): Promise<SceneObjectSummary[]> {
@@ -2751,6 +3219,7 @@ class McpUnityClient {
     this.verifiedEditTransformTools = false;
     this.verifiedSaveSceneTool = false;
     this.verifiedCreateLightTools = false;
+    this.verifiedCreateObjectGridTools = false;
     this.verifiedSceneObjectReadTools = false;
     this.verifiedEditObjectTools = false;
     this.canRefreshAssets = false;

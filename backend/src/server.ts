@@ -1,5 +1,7 @@
+import "dotenv/config";
 import express from "express";
 import { isMcpConfigured, unityConfig } from "./config.js";
+import { chatRoutes } from "./routes/chatRoutes.js";
 import { unityRoutes } from "./routes/unityRoutes.js";
 
 const app = express();
@@ -27,6 +29,7 @@ app.get("/api/health", (_req, res) => {
 });
 
 app.use("/api/unity", unityRoutes);
+app.use("/api/chat", chatRoutes);
 
 app.use((_req, res) => {
   res.status(404).json({
@@ -35,6 +38,17 @@ app.use((_req, res) => {
   });
 });
 
-app.listen(port, "127.0.0.1", () => {
+const server = app.listen(port, "127.0.0.1", () => {
   console.log(`Backend listening locally on http://127.0.0.1:${port}`);
+});
+
+server.on("error", (error: NodeJS.ErrnoException) => {
+  if (error.code === "EADDRINUSE") {
+    console.error(
+      `Backend port ${port} is already in use. Stop the existing server on port ${port}, or set PORT to a different value in backend/.env.`
+    );
+    process.exit(1);
+  }
+
+  throw error;
 });

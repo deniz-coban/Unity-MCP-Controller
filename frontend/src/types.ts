@@ -143,3 +143,43 @@ export interface HealthResponse {
   service?: string;
   mode?: BackendMode;
 }
+
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: number;
+}
+
+export interface ChatAttachment {
+  id: string;
+  kind: "model" | "texture";
+  originalName: string;
+  sizeBytes: number;
+  extension: string;
+}
+
+export interface ChatToolCall {
+  id: string;
+  toolName: string;
+  arguments: unknown;
+  status: "loading" | "success" | "error";
+  result?: string;
+  error?: string;
+}
+
+export interface ChatResponse {
+  ok: true;
+  sessionId: string;
+  message: string;
+  messages: ChatMessage[];
+  toolCalls: ChatToolCall[];
+  attachments: ChatAttachment[];
+}
+
+export interface ChatAttachmentResponse {
+  ok: true;
+  sessionId: string;
+  attachment: ChatAttachment;
+  attachments: ChatAttachment[];
+}
