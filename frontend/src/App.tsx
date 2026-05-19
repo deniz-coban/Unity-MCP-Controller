@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { ActivityPanel } from "./components/ActivityPanel";
 import { ChatPanel } from "./components/ChatPanel";
-import { ManualDrawer } from "./components/ManualDrawer";
+import { Library } from "./components/Library";
 import { TopBar } from "./components/TopBar";
 import {
   BackendStatus,
@@ -757,10 +757,17 @@ export default function App() {
         backendStatus={backendStatus}
         statusLabel={statusLabel}
         onCheckBackend={checkBackend}
-        onOpenManualTools={() => setIsDashboardOpen(true)}
       />
 
       <section className="chat-workspace">
+        <aside className="left-column">
+          <ActivityPanel
+            chatToolCalls={chatToolCalls}
+            recentManualLogs={recentManualLogs}
+          />
+          <Library />
+        </aside>
+
         <ChatPanel
           showOpenAiBanner={showOpenAiBanner}
           showUnityProjectBanner={showUnityProjectBanner}
@@ -781,47 +788,7 @@ export default function App() {
           onChatInputChange={setChatInput}
           onSubmitChat={submitChat}
         />
-
-        <ActivityPanel
-          chatToolCalls={chatToolCalls}
-          recentManualLogs={recentManualLogs}
-        />
       </section>
-
-      <ManualDrawer
-        isOpen={isDashboardOpen}
-        onClose={() => setIsDashboardOpen(false)}
-        isMcpMode={isMcpMode}
-        isBusy={isBusy}
-        sceneActionSubtitle={sceneActionSubtitle}
-        runAction={runAction}
-        createObjectValues={createObjectValues}
-        setCreateObjectValues={setCreateObjectValues}
-        submitCreateObject={submitCreateObject}
-        createTextureInputRef={createTextureInputRef}
-        clearCreateTextureFile={clearCreateTextureFile}
-        createLightValues={createLightValues}
-        setCreateLightValues={setCreateLightValues}
-        submitCreateLight={submitCreateLight}
-        importModelValues={importModelValues}
-        setImportModelValues={setImportModelValues}
-        submitImportModel={submitImportModel}
-        modelFileInputRef={modelFileInputRef}
-        modelTextureInputRef={modelTextureInputRef}
-        clearModelFile={clearModelFile}
-        clearModelTextureFile={clearModelTextureFile}
-        selectedSceneObject={selectedSceneObject}
-        sceneObjectSearch={sceneObjectSearch}
-        setSceneObjectSearch={setSceneObjectSearch}
-        filteredSceneObjects={filteredSceneObjects}
-        refreshSceneObjects={refreshSceneObjects}
-        loadSceneObjectDetails={loadSceneObjectDetails}
-        editObjectValues={editObjectValues}
-        setEditObjectValues={setEditObjectValues}
-        submitEditObject={submitEditObject}
-        logs={logs}
-        onClearLogs={() => setLogs([])}
-      />
     </main>
   );
 }

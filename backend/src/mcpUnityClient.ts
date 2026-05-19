@@ -1490,9 +1490,14 @@ class McpUnityClient {
       const client = await this.connect();
       await this.verifyDeleteObjectTool(client);
 
-      const deleted: number[] = [];
-      const failed: { instanceId: number; error: string }[] = [];
+      const perCallFailures: { instanceId: number; error: string }[] = [];
 
+      // `delete_gameobject` with includeChildren:true removes descendants
+      // alongside their parent. A subsequent attempt on one of those already-
+      // gone descendants throws "object not found", which is NOT a real
+      // failure — the deletion happened, just not via this particular call.
+      // We loop through every requested id anyway (so partially-broken trees
+      // still get cleaned up), then verify against the live hierarchy below.
       for (const instanceId of payload.instanceIds) {
         try {
           await this.callTool(
@@ -1501,10 +1506,56 @@ class McpUnityClient {
             { instanceId, includeChildren: true },
             `Deleting Unity GameObject ${instanceId}`
           );
-          deleted.push(instanceId);
         } catch (error) {
-          failed.push({ instanceId, error: getErrorMessage(error) });
+          perCallFailures.push({
+            instanceId,
+            error: getErrorMessage(error)
+          });
         }
+      }
+
+      // Verify by reading the live hierarchy. If this snapshot succeeds, an
+      // id is only considered "failed" if it is STILL present in the scene.
+      // If the snapshot itself fails, fall back to trusting per-call signals.
+      let verifiedRemainingIds: Set<number> | undefined;
+      try {
+        const snapshot = await this.readHierarchySnapshot(client);
+        verifiedRemainingIds = snapshot.instanceIds;
+      } catch {
+        verifiedRemainingIds = undefined;
+      }
+
+      let deleted: number[];
+      let failed: { instanceId: number; error: string }[];
+      let verificationNote: string | undefined;
+
+      if (verifiedRemainingIds) {
+        deleted = payload.instanceIds.filter(
+          (id) => !verifiedRemainingIds!.has(id)
+        );
+        const stillPresent = payload.instanceIds.filter((id) =>
+          verifiedRemainingIds!.has(id)
+        );
+        failed = stillPresent.map((id) => {
+          const perCall = perCallFailures.find(
+            (entry) => entry.instanceId === id
+          );
+          return {
+            instanceId: id,
+            error:
+              perCall?.error ??
+              "Object still present in scene after delete attempt."
+          };
+        });
+        if (perCallFailures.length > failed.length) {
+          verificationNote = `Ignored ${perCallFailures.length - failed.length} apparent per-call errors confirmed deleted via parent (descendants removed with includeChildren).`;
+        }
+      } else {
+        const failedSet = new Set(
+          perCallFailures.map((entry) => entry.instanceId)
+        );
+        deleted = payload.instanceIds.filter((id) => !failedSet.has(id));
+        failed = perCallFailures;
       }
 
       if (deleted.length === 0 && failed.length > 0) {
@@ -1533,7 +1584,9 @@ class McpUnityClient {
           tool: "delete_gameobject",
           requested: payload.instanceIds.length,
           deleted,
-          failed: failed.slice(0, 20)
+          failed: failed.slice(0, 20),
+          ...(verificationNote ? { verificationNote } : {}),
+          verified: verifiedRemainingIds !== undefined
         }
       };
     } catch (error) {

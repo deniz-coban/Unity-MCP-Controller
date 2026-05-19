@@ -1,4 +1,11 @@
-import { FormEvent, RefObject } from "react";
+import {
+  FormEvent,
+  KeyboardEvent,
+  RefObject,
+  useEffect,
+  useRef
+} from "react";
+import { Spinner } from "./Spinner";
 import type {
   ChatAttachment,
   PendingConfirmation
@@ -46,6 +53,29 @@ export function ChatPanel({
   onChatInputChange,
   onSubmitChat
 }: ChatPanelProps) {
+  const historyRef = useRef<HTMLDivElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+
+  useEffect(() => {
+    const el = historyRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [renderedChatMessages, pendingConfirmations, isChatBusy]);
+
+  const handleTextareaKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    // event.nativeEvent.isComposing guards against firing during IME composition
+    // (e.g. when typing CJK characters with an input method editor).
+    const isComposing =
+      (event.nativeEvent as { isComposing?: boolean }).isComposing === true;
+    if (event.key === "Enter" && !event.shiftKey && !isComposing) {
+      event.preventDefault();
+      if (chatInput.trim() && !isChatBusy) {
+        formRef.current?.requestSubmit();
+      }
+    }
+  };
+
   return (
     <section className="chat-panel">
       {showOpenAiBanner ? (
@@ -83,7 +113,7 @@ export function ChatPanel({
         </div>
         <p>{sceneActionSubtitle}</p>
       </div>
-      <div className="chat-history" aria-live="polite">
+      <div className="chat-history" aria-live="polite" ref={historyRef}>
         {renderedChatMessages.map((message) => {
           const roleLabel =
             message.role === "user"
@@ -114,7 +144,7 @@ export function ChatPanel({
           <article className="chat-message assistant pending">
             <span>Assistant</span>
             <p>
-              <span className="spinner" /> Thinking and calling Unity tools...
+              <Spinner /> Thinking and calling Unity tools...
             </p>
           </article>
         ) : null}
@@ -193,7 +223,7 @@ export function ChatPanel({
                           >
                             {isResolving ? (
                               <>
-                                <span className="spinner" /> Working
+                                <Spinner /> Working
                               </>
                             ) : (
                               "Pick this"
@@ -223,7 +253,7 @@ export function ChatPanel({
                     >
                       {isResolving ? (
                         <>
-                          <span className="spinner" /> Running
+                          <Spinner /> Running
                         </>
                       ) : (
                         confirmation.confirmLabel || "Confirm"
@@ -271,17 +301,18 @@ export function ChatPanel({
           </div>
         ) : null}
       </div>
-      <form className="chat-input-row" onSubmit={onSubmitChat}>
+      <form className="chat-input-row" onSubmit={onSubmitChat} ref={formRef}>
         <textarea
           disabled={isChatBusy}
           onChange={(event) => onChatInputChange(event.target.value)}
+          onKeyDown={handleTextareaKeyDown}
           placeholder="Describe what you want to build in Unity..."
           value={chatInput}
         />
         <button disabled={isChatBusy || !chatInput.trim()} type="submit">
           {isChatBusy ? (
             <>
-              <span className="spinner" /> Sending
+              <Spinner /> Sending
             </>
           ) : (
             "Send"
