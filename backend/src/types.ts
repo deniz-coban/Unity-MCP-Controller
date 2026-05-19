@@ -75,7 +75,7 @@ export interface CreateObjectGridPayload {
   scale: Vector3;
 }
 
-export type ModelFileExtension = ".fbx" | ".obj";
+export type ModelFileExtension = ".fbx" | ".obj" | ".glb" | ".gltf";
 export type TextureFileExtension = ".png" | ".jpg" | ".jpeg";
 
 export interface UploadedModelFile {
@@ -176,6 +176,11 @@ export interface EditObjectPayload {
 
 export type MockObjectType = UnityDefaultObjectType | "light" | "model";
 
+export interface MockMaterialColor {
+  color: ColorRGBA;
+  colorHex: string;
+}
+
 export interface MockObject {
   instanceId: number;
   name: string;
@@ -185,6 +190,70 @@ export interface MockObject {
   scale: Vector3;
   texture?: TextureMetadata;
   light?: MockLightData;
+  materialColor?: MockMaterialColor;
+}
+
+export interface DeleteObjectPayload {
+  instanceId: number;
+  confirm?: boolean;
+}
+
+export interface DeleteObjectsPayload {
+  instanceIds: number[];
+  confirm?: boolean;
+}
+
+export interface DuplicateObjectPayload {
+  instanceId: number;
+  newName?: string;
+  positionOffset?: Partial<Vector3>;
+}
+
+export interface ApplyTextureToObjectPayload {
+  instanceId: number;
+  texture: UploadedTextureFile;
+}
+
+export interface SetMaterialColorPayload {
+  instanceId: number;
+  color: ColorRGBA;
+  colorHex: string;
+}
+
+export interface BatchApplyTextureToObjectsPayload {
+  instanceIds: number[];
+  texture: UploadedTextureFile;
+}
+
+export interface BatchSetMaterialColorPayload {
+  instanceIds: number[];
+  color: ColorRGBA;
+  colorHex: string;
+}
+
+export type OnlineModelSource = "poly_pizza" | "sketchfab";
+
+export interface OnlineModelCandidate {
+  id: string;
+  source: OnlineModelSource;
+  title: string;
+  author: string;
+  license: string;
+  thumbnailUrl?: string;
+  sourceUrl: string;
+  // Source-specific data needed to perform the actual download on confirm.
+  downloadRef:
+    | { kind: "direct"; url: string; extension: ModelFileExtension }
+    | { kind: "sketchfab-gltf"; uid: string };
+}
+
+export interface FindOnlineModelPayload {
+  query: string;
+  sources: OnlineModelSource[];
+  name?: string;
+  position?: Vector3;
+  rotation?: Vector3;
+  scale?: Vector3;
 }
 
 export interface MockSceneState {
@@ -211,7 +280,15 @@ export type UnityAction =
   | "moveObject"
   | "scaleObject"
   | "editTransform"
-  | "saveScene";
+  | "saveScene"
+  | "deleteObject"
+  | "deleteObjects"
+  | "duplicateObject"
+  | "applyTextureToObject"
+  | "setMaterialColor"
+  | "batchApplyTextureToObjects"
+  | "batchSetMaterialColor"
+  | "findOnlineModel";
 
 export interface UnityActionSuccessResponse {
   ok: true;

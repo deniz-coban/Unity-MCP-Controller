@@ -1,11 +1,17 @@
 import { unityConfig } from "../config.js";
 import { unityClient } from "../unityClient.js";
 import type {
+  ApplyTextureToObjectPayload,
+  BatchApplyTextureToObjectsPayload,
+  BatchSetMaterialColorPayload,
   CreateObjectPayload,
+  DeleteObjectsPayload,
+  DuplicateObjectPayload,
   EditObjectPayload,
   PartialTransformPayload,
   RenameObjectPayload,
   SceneObjectDetails,
+  SetMaterialColorPayload,
   UnityActionResponse,
   CreateObjectGridPayload,
   UnityDefaultObjectType,
@@ -13,15 +19,32 @@ import type {
   Vector3
 } from "../types.js";
 import {
+  validateApplyTextureToObjectMultipartPayload,
+  validateBatchApplyTextureToObjectsMultipartPayload,
+  validateBatchSetMaterialColorPayload,
   validateCreateLightPayload,
   validateCreateObjectMultipartPayload,
   validateCreateObjectPayload,
+  validateDeleteObjectsPayload,
+  validateDuplicateObjectPayload,
   validateEditObjectPayload,
+  validateFindOnlineModelPayload,
   validateImportModelPayload,
+  validateSetMaterialColorPayload,
   unityDefaultObjectTypes,
   unityLightTypes
 } from "../validation.js";
-import { getChatAttachment } from "./sessionStore.js";
+import { searchOnlineModels } from "../online/index.js";
+import { randomUUID } from "node:crypto";
+import {
+  getChatAttachment,
+  recordPendingConfirmation
+} from "./sessionStore.js";
+import type {
+  PendingConfirmation,
+  PendingConfirmationOption,
+  PendingConfirmationTarget
+} from "./types.js";
 import type { ChatToolContext, ChatToolResult } from "./types.js";
 
 type ToolExecutor = (
@@ -417,15 +440,48 @@ const createDefaultObjectPayload = (
 
 const executeListSceneObjects: ToolExecutor = async () => {
   const result = unityResult(await unityClient.listSceneObjects());
-  const objects = isRecord(result.data) && Array.isArray(result.data.objects)
-    ? result.data.objects
-    : [];
+  const objects =
+    isRecord(result.data) && Array.isArray(result.data.objects)
+      ? result.data.objects
+      : [];
+
+  // Compact form for the LLM. Drops heavy fields (path/scenePath/sceneName/
+  // sceneFilePath/componentTypes/displayName) so the model can see every id
+  // even in large scenes without hitting the per-tool-output cap.
+  const compact = objects.slice(0, 1000).reduce<
+    Array<{
+      instanceId: number;
+      name: string;
+      category: string;
+      hasLight: boolean;
+      hasRenderer: boolean;
+    }>
+  >((acc, raw) => {
+    if (!isRecord(raw)) return acc;
+    const instanceId = asNumber(raw.instanceId);
+    if (instanceId === undefined || !Number.isInteger(instanceId)) return acc;
+    acc.push({
+      instanceId,
+      name: typeof raw.name === "string" ? raw.name : `id ${instanceId}`,
+      category: typeof raw.category === "string" ? raw.category : "generic",
+      hasLight: Boolean(raw.hasLight),
+      hasRenderer: Boolean(raw.hasRenderer)
+    });
+    return acc;
+  }, []);
 
   return {
     ...result,
     data: {
       count: objects.length,
-      objects: objects.slice(0, 250)
+      returned: compact.length,
+      objects: compact,
+      ...(objects.length > compact.length
+        ? {
+            truncated: true,
+            truncatedAt: compact.length
+          }
+        : {})
     }
   };
 };
@@ -680,6 +736,388 @@ const executeImportModel: ToolExecutor = async (args, context) => {
 
 const executeSaveScene: ToolExecutor = async () => unityResult(await unityClient.saveScene());
 
+const TARGETS_IN_DESCRIPTION = 5;
+
+const formatTargetPreview = (target: PendingConfirmationTarget): string =>
+  `id ${target.instanceId} — ${target.name}${target.category ? ` (${target.category})` : ""}`;
+
+const buildConfirmationDescription = (
+  targets: PendingConfirmationTarget[],
+  truncatedTargetCount: number
+): string => {
+  if (targets.length === 0) {
+    return "Nothing selected.";
+  }
+  const lines = targets.slice(0, TARGETS_IN_DESCRIPTION).map(formatTargetPreview);
+  const total = targets.length + truncatedTargetCount;
+  if (total > TARGETS_IN_DESCRIPTION) {
+    lines.push(`…and ${total - TARGETS_IN_DESCRIPTION} more.`);
+  }
+  return lines.join("\n");
+};
+
+const executeDeleteObject: ToolExecutor = async (args, context) => {
+  const instanceId = asNumber(args.instanceId);
+  if (instanceId === undefined || !Number.isInteger(instanceId)) {
+    return { ok: false, message: "instanceId must be an integer." };
+  }
+
+  const detailsResponse = await unityClient.getSceneObject(instanceId);
+  if (!detailsResponse.ok) {
+    return { ok: false, message: detailsResponse.error };
+  }
+
+  const object = (detailsResponse.data as { object?: unknown } | undefined)?.object;
+  if (!isRecord(object)) {
+    return {
+      ok: false,
+      message: "Scene object details were missing from the Unity response."
+    };
+  }
+  const details = object as unknown as SceneObjectDetails;
+  const target: PendingConfirmationTarget = {
+    instanceId: details.instanceId,
+    name: details.name,
+    category: details.category
+  };
+
+  const confirmation = recordPendingConfirmation(context.session, {
+    key: randomUUID(),
+    kind: "delete_object",
+    title: `Delete "${details.name}"?`,
+    description: buildConfirmationDescription([target], 0),
+    confirmLabel: "Delete object",
+    cancelLabel: "Cancel",
+    targets: [target],
+    truncatedTargetCount: 0
+  });
+
+  return {
+    ok: true,
+    message: `Prepared a confirmation prompt to delete "${details.name}" (id ${details.instanceId}). The user must click Confirm in the UI to proceed.`,
+    data: {
+      confirmation: serializeConfirmation(confirmation)
+    }
+  };
+};
+
+const MAX_BATCH_DELETE_PER_PREVIEW = 500;
+
+const executeDeleteObjects: ToolExecutor = async (args, context) => {
+  const validation = validateDeleteObjectsPayload(args);
+  if (!validation.ok) {
+    return { ok: false, message: validation.details.join(" ") };
+  }
+
+  const payload = validation.payload as DeleteObjectsPayload;
+  if (payload.instanceIds.length > MAX_BATCH_DELETE_PER_PREVIEW) {
+    return {
+      ok: false,
+      message: `delete_objects accepts at most ${MAX_BATCH_DELETE_PER_PREVIEW} ids per call. Requested ${payload.instanceIds.length}.`
+    };
+  }
+
+  const listing = await unityClient.listSceneObjects();
+  if (!listing.ok) {
+    return { ok: false, message: listing.error };
+  }
+  const sceneObjectsRaw = (listing.data as { objects?: unknown } | undefined)?.objects;
+  const sceneObjects = Array.isArray(sceneObjectsRaw)
+    ? (sceneObjectsRaw as Array<{ instanceId?: number; name?: string; category?: string }>)
+    : [];
+  const sceneById = new Map(
+    sceneObjects
+      .filter(
+        (o) => typeof o.instanceId === "number" && typeof o.name === "string"
+      )
+      .map(
+        (o) => [o.instanceId as number, o] as const
+      )
+  );
+
+  const targets: PendingConfirmationTarget[] = [];
+  const missing: number[] = [];
+  for (const id of payload.instanceIds) {
+    const found = sceneById.get(id);
+    if (!found) {
+      missing.push(id);
+      continue;
+    }
+    targets.push({
+      instanceId: id,
+      name: found.name ?? `id ${id}`,
+      category: found.category ?? ""
+    });
+  }
+
+  if (targets.length === 0) {
+    return {
+      ok: false,
+      message:
+        missing.length > 0
+          ? `None of the requested ids exist in the current scene. Missing: ${missing.slice(0, 10).join(", ")}${missing.length > 10 ? "…" : ""}.`
+          : "No targets to delete."
+    };
+  }
+
+  const title =
+    targets.length === 1
+      ? `Delete "${targets[0].name}"?`
+      : `Delete ${targets.length} objects?`;
+
+  const confirmLabel =
+    targets.length === 1
+      ? "Delete object"
+      : `Delete ${targets.length} objects`;
+
+  const confirmation = recordPendingConfirmation(context.session, {
+    key: randomUUID(),
+    kind: "delete_objects",
+    title,
+    description:
+      buildConfirmationDescription(targets, 0) +
+      (missing.length > 0
+        ? `\n(${missing.length} requested id${missing.length === 1 ? "" : "s"} not found in scene and will be skipped.)`
+        : ""),
+    confirmLabel,
+    cancelLabel: "Cancel",
+    targets,
+    truncatedTargetCount: 0
+  });
+
+  return {
+    ok: true,
+    message: `Prepared a confirmation prompt to delete ${targets.length} object${targets.length === 1 ? "" : "s"}. The user must click Confirm in the UI to proceed.`,
+    data: {
+      confirmation: serializeConfirmation(confirmation),
+      ...(missing.length > 0 ? { missing } : {})
+    }
+  };
+};
+
+const serializeConfirmation = (confirmation: PendingConfirmation) => ({
+  key: confirmation.key,
+  kind: confirmation.kind,
+  title: confirmation.title,
+  description: confirmation.description,
+  confirmLabel: confirmation.confirmLabel,
+  cancelLabel: confirmation.cancelLabel,
+  targetCount: confirmation.targets.length,
+  targets: confirmation.targets.slice(0, 10),
+  ...(confirmation.options
+    ? {
+        options: confirmation.options.map((o) => ({
+          key: o.key,
+          label: o.label,
+          description: o.description,
+          thumbnailUrl: o.thumbnailUrl,
+          metaLabel: o.metaLabel
+        }))
+      }
+    : {})
+});
+
+const executeDuplicateObject: ToolExecutor = async (args) => {
+  const validation = validateDuplicateObjectPayload(args);
+  if (!validation.ok) {
+    return { ok: false, message: validation.details.join(" ") };
+  }
+  const payload = validation.payload as DuplicateObjectPayload;
+  return unityResult(await unityClient.duplicateObject(payload));
+};
+
+const executeApplyTextureToObject: ToolExecutor = async (args, context) => {
+  const instanceId = asNumber(args.instanceId);
+  const textureAttachmentId =
+    typeof args.textureAttachmentId === "string" ? args.textureAttachmentId : undefined;
+
+  if (instanceId === undefined || !Number.isInteger(instanceId)) {
+    return { ok: false, message: "instanceId must be an integer." };
+  }
+
+  if (!textureAttachmentId) {
+    return { ok: false, message: "textureAttachmentId is required." };
+  }
+
+  const attachment = getChatAttachment(context.session, textureAttachmentId);
+  if (!attachment) {
+    return {
+      ok: false,
+      message: `Texture attachment "${textureAttachmentId}" was not found.`
+    };
+  }
+  if (attachment.kind !== "texture") {
+    return {
+      ok: false,
+      message: `Attachment "${attachment.id}" is not a texture.`
+    };
+  }
+
+  const validation = validateApplyTextureToObjectMultipartPayload(
+    { instanceId },
+    attachment
+  );
+  if (!validation.ok) {
+    return { ok: false, message: validation.details.join(" ") };
+  }
+
+  return unityResult(
+    await unityClient.applyTextureToObject(
+      validation.payload as ApplyTextureToObjectPayload
+    )
+  );
+};
+
+const executeSetMaterialColor: ToolExecutor = async (args) => {
+  const validation = validateSetMaterialColorPayload(args);
+  if (!validation.ok) {
+    return { ok: false, message: validation.details.join(" ") };
+  }
+  const payload = validation.payload as SetMaterialColorPayload;
+  return unityResult(await unityClient.setMaterialColor(payload));
+};
+
+const executeBatchApplyTextureToObjects: ToolExecutor = async (args, context) => {
+  const rawIds = Array.isArray(args.instanceIds) ? args.instanceIds : undefined;
+  const textureAttachmentId =
+    typeof args.textureAttachmentId === "string"
+      ? args.textureAttachmentId
+      : undefined;
+
+  if (!rawIds || rawIds.length === 0) {
+    return {
+      ok: false,
+      message: "instanceIds must be a non-empty array of integers."
+    };
+  }
+  if (!textureAttachmentId) {
+    return { ok: false, message: "textureAttachmentId is required." };
+  }
+
+  const attachment = getChatAttachment(context.session, textureAttachmentId);
+  if (!attachment) {
+    return {
+      ok: false,
+      message: `Texture attachment "${textureAttachmentId}" was not found.`
+    };
+  }
+  if (attachment.kind !== "texture") {
+    return {
+      ok: false,
+      message: `Attachment "${attachment.id}" is not a texture.`
+    };
+  }
+
+  const validation = validateBatchApplyTextureToObjectsMultipartPayload(
+    { instanceIds: rawIds },
+    attachment
+  );
+  if (!validation.ok) {
+    return { ok: false, message: validation.details.join(" ") };
+  }
+
+  return unityResult(
+    await unityClient.batchApplyTextureToObjects(
+      validation.payload as BatchApplyTextureToObjectsPayload
+    )
+  );
+};
+
+const executeFindOnlineModel: ToolExecutor = async (args, context) => {
+  const validation = validateFindOnlineModelPayload(args);
+  if (!validation.ok) {
+    return { ok: false, message: validation.details.join(" ") };
+  }
+  const payload = validation.payload;
+
+  const result = await searchOnlineModels(payload.query, payload.sources, 6);
+
+  if (result.configuredSources.length === 0) {
+    return {
+      ok: false,
+      message:
+        "Online model search is not configured. Set POLY_PIZZA_API_KEY and/or SKETCHFAB_API_TOKEN in backend/.env and restart the backend."
+    };
+  }
+
+  if (result.candidates.length === 0) {
+    const errorNote =
+      result.errors.length > 0
+        ? ` Errors: ${result.errors
+            .map((e) => `${e.source}: ${e.message}`)
+            .join("; ")}.`
+        : "";
+    return {
+      ok: false,
+      message: `No online models found for "${payload.query}".${errorNote}`
+    };
+  }
+
+  const options: PendingConfirmationOption[] = result.candidates.map(
+    (candidate) => ({
+      key: candidate.id,
+      label: candidate.title,
+      description: `by ${candidate.author} — ${candidate.license}`,
+      thumbnailUrl: candidate.thumbnailUrl,
+      metaLabel:
+        candidate.source === "poly_pizza" ? "Poly Pizza" : "Sketchfab",
+      metadata: {
+        candidate,
+        importParams: {
+          name: payload.name,
+          position: payload.position,
+          rotation: payload.rotation,
+          scale: payload.scale
+        }
+      }
+    })
+  );
+
+  const confirmation: PendingConfirmation = recordPendingConfirmation(
+    context.session,
+    {
+      key: randomUUID(),
+      kind: "select_model",
+      title: `Pick a model for "${payload.query}"`,
+      description:
+        `Showing ${options.length} candidate${options.length === 1 ? "" : "s"}` +
+        (result.errors.length > 0
+          ? ` (${result.errors.length} source error${result.errors.length === 1 ? "" : "s"})`
+          : "") +
+        `. The model is downloaded and imported only when you pick one.`,
+      confirmLabel: "Pick this",
+      cancelLabel: "Cancel",
+      targets: [],
+      truncatedTargetCount: 0,
+      options,
+      context: {
+        query: payload.query
+      }
+    }
+  );
+
+  return {
+    ok: true,
+    message: `Found ${options.length} candidate${options.length === 1 ? "" : "s"} for "${payload.query}". Awaiting user selection in the UI.`,
+    data: {
+      confirmation: serializeConfirmation(confirmation),
+      errors: result.errors
+    }
+  };
+};
+
+const executeBatchSetMaterialColor: ToolExecutor = async (args) => {
+  const validation = validateBatchSetMaterialColorPayload(args);
+  if (!validation.ok) {
+    return { ok: false, message: validation.details.join(" ") };
+  }
+  return unityResult(
+    await unityClient.batchSetMaterialColor(
+      validation.payload as BatchSetMaterialColorPayload
+    )
+  );
+};
+
 export const chatToolExecutors: Record<string, ToolExecutor> = {
   list_scene_objects: executeListSceneObjects,
   get_scene_object_details: executeGetSceneObjectDetails,
@@ -707,5 +1145,13 @@ export const chatToolExecutors: Record<string, ToolExecutor> = {
     "absolute"
   ),
   import_model: executeImportModel,
-  save_scene: executeSaveScene
+  save_scene: executeSaveScene,
+  delete_object: executeDeleteObject,
+  delete_objects: executeDeleteObjects,
+  duplicate_object: executeDuplicateObject,
+  apply_texture_to_object: executeApplyTextureToObject,
+  set_material_color: executeSetMaterialColor,
+  batch_apply_texture_to_objects: executeBatchApplyTextureToObjects,
+  batch_set_material_color: executeBatchSetMaterialColor,
+  find_online_model: executeFindOnlineModel
 };

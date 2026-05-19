@@ -49,9 +49,13 @@ export const unityConfig = {
     apiKey: process.env.OPENAI_API_KEY?.trim() || undefined,
     model: process.env.OPENAI_MODEL?.trim() || "gpt-4.1-mini"
   },
+  onlineModels: {
+    polyPizzaApiKey: process.env.POLY_PIZZA_API_KEY?.trim() || undefined,
+    sketchfabApiToken: process.env.SKETCHFAB_API_TOKEN?.trim() || undefined
+  },
   chat: {
     historyMaxItems: parsePositiveInteger(process.env.CHAT_HISTORY_MAX_ITEMS, 24),
-    maxToolCalls: parsePositiveInteger(process.env.CHAT_MAX_TOOL_CALLS, 16),
+    maxToolCalls: parsePositiveInteger(process.env.CHAT_MAX_TOOL_CALLS, 32),
     maxGridObjects: parsePositiveInteger(process.env.CHAT_MAX_GRID_OBJECTS, 200),
     maxBatchEditObjects: parsePositiveInteger(
       process.env.CHAT_MAX_BATCH_EDIT_OBJECTS,

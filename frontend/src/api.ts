@@ -7,6 +7,7 @@ import type {
   EditTransformPayload,
   HealthResponse,
   ObjectTransformPayload,
+  ResolveConfirmationResponse,
   UnityActionResponse
 } from "./types";
 
@@ -67,6 +68,25 @@ export const api = {
     formData.append("file", file);
 
     return requestForm<ChatAttachmentResponse>("/api/chat/attachments", formData);
+  },
+
+  resolveConfirmation(
+    sessionId: string,
+    key: string,
+    action: "confirm" | "cancel",
+    optionKey?: string
+  ): Promise<ResolveConfirmationResponse> {
+    return requestJson<ResolveConfirmationResponse>(
+      `/api/chat/confirmations/${encodeURIComponent(key)}`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          sessionId,
+          action,
+          ...(optionKey !== undefined ? { optionKey } : {})
+        })
+      }
+    );
   },
 
   createScene(): Promise<UnityActionResponse> {

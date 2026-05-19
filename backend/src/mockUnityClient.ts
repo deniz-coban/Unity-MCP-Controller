@@ -1,19 +1,26 @@
 import type {
-  MockObject,
-  MockObjectType,
-  MockSceneState,
+  ApplyTextureToObjectPayload,
+  BatchApplyTextureToObjectsPayload,
+  BatchSetMaterialColorPayload,
   CreateLightPayload,
   CreateObjectGridPayload,
   CreateObjectPayload,
+  DeleteObjectPayload,
+  DeleteObjectsPayload,
+  DuplicateObjectPayload,
   EditObjectPayload,
   EditTransformPayload,
   ImportModelPayload,
+  MockObject,
+  MockObjectType,
+  MockSceneState,
   ObjectTransformPayload,
   PartialTransformPayload,
   RenameObjectPayload,
   SceneObjectCategory,
   SceneObjectDetails,
   SceneObjectSummary,
+  SetMaterialColorPayload,
   TextureMetadata,
   UnityAction,
   UnityActionErrorResponse,
@@ -676,5 +683,300 @@ export const mockUnityClient = {
     return mockSuccess("saveScene", "Mock scene saved successfully.", {
       state: cloneState()
     });
+  },
+
+  deleteObject(payload: DeleteObjectPayload): UnityActionResponse {
+    const sceneError = ensureScene();
+    if (sceneError) {
+      return sceneError;
+    }
+
+    if (payload.confirm !== true) {
+      return mockError(
+        "Refusing to delete without confirm: true. The chat layer enforces a preview step before this is called."
+      );
+    }
+
+    const index = state.objects.findIndex(
+      (object) => object.instanceId === payload.instanceId
+    );
+    if (index === -1) {
+      return mockError("Object no longer exists. Refresh scene objects.");
+    }
+
+    const [removed] = state.objects.splice(index, 1);
+
+    return mockSuccess("deleteObject", `Mock deleted ${removed.name}.`, {
+      removed: {
+        instanceId: removed.instanceId,
+        name: removed.name,
+        type: removed.type
+      },
+      state: cloneState()
+    });
+  },
+
+  deleteObjects(payload: DeleteObjectsPayload): UnityActionResponse {
+    const sceneError = ensureScene();
+    if (sceneError) {
+      return sceneError;
+    }
+
+    if (payload.confirm !== true) {
+      return mockError(
+        "Refusing to batch-delete without confirm: true. The chat layer enforces a preview step before this is called."
+      );
+    }
+
+    const targets = new Set(payload.instanceIds);
+    const removed: { instanceId: number; name: string; type: MockObjectType }[] = [];
+    const remaining: typeof state.objects = [];
+    const missing: number[] = [];
+
+    for (const object of state.objects) {
+      if (targets.has(object.instanceId)) {
+        removed.push({
+          instanceId: object.instanceId,
+          name: object.name,
+          type: object.type
+        });
+        targets.delete(object.instanceId);
+      } else {
+        remaining.push(object);
+      }
+    }
+
+    for (const id of targets) {
+      missing.push(id);
+    }
+
+    state.objects = remaining;
+
+    return mockSuccess(
+      "deleteObjects",
+      `Mock deleted ${removed.length} object${removed.length === 1 ? "" : "s"}${
+        missing.length > 0 ? ` (${missing.length} not found)` : ""
+      }.`,
+      {
+        removed,
+        missing,
+        state: cloneState()
+      }
+    );
+  },
+
+  duplicateObject(payload: DuplicateObjectPayload): UnityActionResponse {
+    const sceneError = ensureScene();
+    if (sceneError) {
+      return sceneError;
+    }
+
+    const source = findObjectByInstanceId(payload.instanceId);
+    if (!source) {
+      return mockError("Object no longer exists. Refresh scene objects.");
+    }
+
+    const baseName = payload.newName?.trim() || `${source.name}_Copy`;
+    const finalName = nextObjectName(baseName);
+    const offset = payload.positionOffset ?? {};
+    const clone: MockObject = {
+      instanceId: nextInstanceId++,
+      name: finalName,
+      type: source.type,
+      position: {
+        x: source.position.x + (offset.x ?? 0),
+        y: source.position.y + (offset.y ?? 0),
+        z: source.position.z + (offset.z ?? 0)
+      },
+      rotation: { ...source.rotation },
+      scale: { ...source.scale },
+      ...(source.texture ? { texture: { ...source.texture } } : {}),
+      ...(source.light
+        ? {
+            light: {
+              ...source.light,
+              color: { ...source.light.color }
+            }
+          }
+        : {}),
+      ...(source.materialColor
+        ? {
+            materialColor: {
+              ...source.materialColor,
+              color: { ...source.materialColor.color }
+            }
+          }
+        : {})
+    };
+
+    state.objects.push(clone);
+
+    return mockSuccess(
+      "duplicateObject",
+      `Mock duplicated ${source.name} as ${finalName}.`,
+      {
+        source: { instanceId: source.instanceId, name: source.name },
+        object: clone,
+        state: cloneState()
+      }
+    );
+  },
+
+  applyTextureToObject(payload: ApplyTextureToObjectPayload): UnityActionResponse {
+    const sceneError = ensureScene();
+    if (sceneError) {
+      return sceneError;
+    }
+
+    const object = findObjectByInstanceId(payload.instanceId);
+    if (!object) {
+      return mockError("Object no longer exists. Refresh scene objects.");
+    }
+
+    if (object.type === "light") {
+      return mockError("Cannot apply a texture to a light object.");
+    }
+
+    object.texture = textureMetadata(payload.texture);
+    // applying a texture replaces the current material → drop any color tint
+    object.materialColor = undefined;
+
+    return mockSuccess(
+      "applyTextureToObject",
+      `Mock applied texture ${payload.texture.originalName} to ${object.name}.`,
+      {
+        object,
+        state: cloneState()
+      }
+    );
+  },
+
+  setMaterialColor(payload: SetMaterialColorPayload): UnityActionResponse {
+    const sceneError = ensureScene();
+    if (sceneError) {
+      return sceneError;
+    }
+
+    const object = findObjectByInstanceId(payload.instanceId);
+    if (!object) {
+      return mockError("Object no longer exists. Refresh scene objects.");
+    }
+
+    if (object.type === "light") {
+      return mockError(
+        "Cannot set material color on a light object. Use edit_light for light color."
+      );
+    }
+
+    object.materialColor = {
+      color: { ...payload.color },
+      colorHex: payload.colorHex
+    };
+    // setting a color replaces the current material → drop any texture
+    object.texture = undefined;
+
+    return mockSuccess(
+      "setMaterialColor",
+      `Mock set color ${payload.colorHex} on ${object.name}.`,
+      {
+        object,
+        state: cloneState()
+      }
+    );
+  },
+
+  batchApplyTextureToObjects(
+    payload: BatchApplyTextureToObjectsPayload
+  ): UnityActionResponse {
+    const sceneError = ensureScene();
+    if (sceneError) {
+      return sceneError;
+    }
+
+    const applied: number[] = [];
+    const failed: { instanceId: number; error: string }[] = [];
+
+    for (const instanceId of payload.instanceIds) {
+      const object = findObjectByInstanceId(instanceId);
+      if (!object) {
+        failed.push({ instanceId, error: "Object no longer exists." });
+        continue;
+      }
+      if (object.type === "light") {
+        failed.push({ instanceId, error: "Cannot apply texture to a light." });
+        continue;
+      }
+      object.texture = textureMetadata(payload.texture);
+      object.materialColor = undefined;
+      applied.push(instanceId);
+    }
+
+    if (applied.length === 0 && failed.length > 0) {
+      return mockError("Batch texture failed for every requested object.", [
+        ...failed.slice(0, 10).map((f) => `id ${f.instanceId}: ${f.error}`)
+      ]);
+    }
+
+    return mockSuccess(
+      "batchApplyTextureToObjects",
+      failed.length === 0
+        ? `Mock applied texture ${payload.texture.originalName} to ${applied.length} object${applied.length === 1 ? "" : "s"}.`
+        : `Mock applied texture to ${applied.length} of ${payload.instanceIds.length} object${payload.instanceIds.length === 1 ? "" : "s"}. ${failed.length} failed.`,
+      {
+        requested: payload.instanceIds.length,
+        applied,
+        failed: failed.slice(0, 20),
+        state: cloneState()
+      }
+    );
+  },
+
+  batchSetMaterialColor(
+    payload: BatchSetMaterialColorPayload
+  ): UnityActionResponse {
+    const sceneError = ensureScene();
+    if (sceneError) {
+      return sceneError;
+    }
+
+    const applied: number[] = [];
+    const failed: { instanceId: number; error: string }[] = [];
+
+    for (const instanceId of payload.instanceIds) {
+      const object = findObjectByInstanceId(instanceId);
+      if (!object) {
+        failed.push({ instanceId, error: "Object no longer exists." });
+        continue;
+      }
+      if (object.type === "light") {
+        failed.push({ instanceId, error: "Cannot set material color on a light." });
+        continue;
+      }
+      object.materialColor = {
+        color: { ...payload.color },
+        colorHex: payload.colorHex
+      };
+      object.texture = undefined;
+      applied.push(instanceId);
+    }
+
+    if (applied.length === 0 && failed.length > 0) {
+      return mockError("Batch color failed for every requested object.", [
+        ...failed.slice(0, 10).map((f) => `id ${f.instanceId}: ${f.error}`)
+      ]);
+    }
+
+    return mockSuccess(
+      "batchSetMaterialColor",
+      failed.length === 0
+        ? `Mock set color ${payload.colorHex} on ${applied.length} object${applied.length === 1 ? "" : "s"}.`
+        : `Mock set color on ${applied.length} of ${payload.instanceIds.length} object${payload.instanceIds.length === 1 ? "" : "s"}. ${failed.length} failed.`,
+      {
+        requested: payload.instanceIds.length,
+        applied,
+        failed: failed.slice(0, 20),
+        state: cloneState()
+      }
+    );
   }
 };

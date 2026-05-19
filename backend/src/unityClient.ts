@@ -2,15 +2,22 @@ import { unityConfig } from "./config.js";
 import { mcpUnityClient } from "./mcpUnityClient.js";
 import { mockUnityClient } from "./mockUnityClient.js";
 import type {
+  ApplyTextureToObjectPayload,
+  BatchApplyTextureToObjectsPayload,
+  BatchSetMaterialColorPayload,
   CreateLightPayload,
   CreateObjectGridPayload,
   CreateObjectPayload,
+  DeleteObjectPayload,
+  DeleteObjectsPayload,
+  DuplicateObjectPayload,
   EditObjectPayload,
   EditTransformPayload,
   ImportModelPayload,
   ObjectTransformPayload,
   PartialTransformPayload,
   RenameObjectPayload,
+  SetMaterialColorPayload,
   UnityAction,
   UnityActionErrorResponse,
   UnityActionResponse
@@ -121,5 +128,59 @@ export const unityClient = {
 
   saveScene(): Promise<UnityActionResponse> | UnityActionResponse {
     return isMcpMode() ? mcpUnityClient.saveScene() : mockUnityClient.saveScene();
+  },
+
+  deleteObject(payload: DeleteObjectPayload): Promise<UnityActionResponse> | UnityActionResponse {
+    return isMcpMode()
+      ? mcpUnityClient.deleteObject(payload)
+      : mockUnityClient.deleteObject(payload);
+  },
+
+  deleteObjects(
+    payload: DeleteObjectsPayload
+  ): Promise<UnityActionResponse> | UnityActionResponse {
+    return isMcpMode()
+      ? mcpUnityClient.deleteObjects(payload)
+      : mockUnityClient.deleteObjects(payload);
+  },
+
+  duplicateObject(
+    payload: DuplicateObjectPayload
+  ): Promise<UnityActionResponse> | UnityActionResponse {
+    return isMcpMode()
+      ? mcpUnityClient.duplicateObject(payload)
+      : mockUnityClient.duplicateObject(payload);
+  },
+
+  applyTextureToObject(
+    payload: ApplyTextureToObjectPayload
+  ): Promise<UnityActionResponse> | UnityActionResponse {
+    return isMcpMode()
+      ? mcpUnityClient.applyTextureToObject(payload)
+      : mockUnityClient.applyTextureToObject(payload);
+  },
+
+  setMaterialColor(
+    payload: SetMaterialColorPayload
+  ): Promise<UnityActionResponse> | UnityActionResponse {
+    return isMcpMode()
+      ? mcpUnityClient.setMaterialColor(payload)
+      : mockUnityClient.setMaterialColor(payload);
+  },
+
+  batchApplyTextureToObjects(
+    payload: BatchApplyTextureToObjectsPayload
+  ): Promise<UnityActionResponse> | UnityActionResponse {
+    return isMcpMode()
+      ? mcpUnityClient.batchApplyTextureToObjects(payload)
+      : mockUnityClient.batchApplyTextureToObjects(payload);
+  },
+
+  batchSetMaterialColor(
+    payload: BatchSetMaterialColorPayload
+  ): Promise<UnityActionResponse> | UnityActionResponse {
+    return isMcpMode()
+      ? mcpUnityClient.batchSetMaterialColor(payload)
+      : mockUnityClient.batchSetMaterialColor(payload);
   }
 };

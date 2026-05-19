@@ -14,6 +14,14 @@ app.get("/api/health", (_req, res) => {
     ok: true,
     service: "unity-mcp-controller-backend",
     mode: unityConfig.mode,
+    openai: {
+      configured: Boolean(unityConfig.openai.apiKey),
+      model: unityConfig.openai.model
+    },
+    onlineModels: {
+      polyPizzaConfigured: Boolean(unityConfig.onlineModels.polyPizzaApiKey),
+      sketchfabConfigured: Boolean(unityConfig.onlineModels.sketchfabApiToken)
+    },
     mcp: {
       configured: isMcpConfigured(),
       serverCommand: unityConfig.mcp.serverCommand,

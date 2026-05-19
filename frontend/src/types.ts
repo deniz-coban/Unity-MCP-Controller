@@ -142,6 +142,17 @@ export interface HealthResponse {
   ok: boolean;
   service?: string;
   mode?: BackendMode;
+  openai?: {
+    configured?: boolean;
+    model?: string;
+  };
+  mcp?: {
+    unityProjectPathConfigured?: boolean;
+  };
+  onlineModels?: {
+    polyPizzaConfigured?: boolean;
+    sketchfabConfigured?: boolean;
+  };
 }
 
 export interface ChatMessage {
@@ -168,6 +179,58 @@ export interface ChatToolCall {
   error?: string;
 }
 
+export interface ChatStatusNote {
+  kind: "no_assistant_output";
+  text: string;
+}
+
+export interface PendingConfirmationTarget {
+  instanceId: number;
+  name: string;
+  category: string;
+}
+
+export interface PendingConfirmationOption {
+  key: string;
+  label: string;
+  description: string;
+  thumbnailUrl?: string;
+  metaLabel?: string;
+}
+
+export interface PendingConfirmation {
+  key: string;
+  kind: "delete_object" | "delete_objects" | "select_model";
+  title: string;
+  description: string;
+  confirmLabel: string;
+  cancelLabel: string;
+  targets: PendingConfirmationTarget[];
+  truncatedTargetCount: number;
+  expiresAt: number;
+  options?: PendingConfirmationOption[];
+}
+
+export interface ConfirmationFollowUp {
+  message: string;
+  messages: ChatMessage[];
+  toolCalls: ChatToolCall[];
+  pendingConfirmations: PendingConfirmation[];
+  attachments: ChatAttachment[];
+  statusNote?: ChatStatusNote;
+}
+
+export interface ResolveConfirmationResponse {
+  ok: true;
+  sessionId: string;
+  outcome: "executed" | "cancelled" | "failed";
+  message: string;
+  details?: string[];
+  data?: unknown;
+  pendingConfirmations: PendingConfirmation[];
+  followUp?: ConfirmationFollowUp;
+}
+
 export interface ChatResponse {
   ok: true;
   sessionId: string;
@@ -175,6 +238,8 @@ export interface ChatResponse {
   messages: ChatMessage[];
   toolCalls: ChatToolCall[];
   attachments: ChatAttachment[];
+  statusNote?: ChatStatusNote;
+  pendingConfirmations: PendingConfirmation[];
 }
 
 export interface ChatAttachmentResponse {

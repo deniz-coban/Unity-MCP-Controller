@@ -27,11 +27,50 @@ export interface ToolCallLogEntry {
   error?: string;
 }
 
+export type PendingConfirmationKind =
+  | "delete_object"
+  | "delete_objects"
+  | "select_model";
+
+export interface PendingConfirmationTarget {
+  instanceId: number;
+  name: string;
+  category: string;
+}
+
+export interface PendingConfirmationOption {
+  key: string;
+  label: string;
+  description: string;
+  thumbnailUrl?: string;
+  metaLabel?: string;
+  // Source-private metadata used by the route handler to perform the action
+  // when the user picks this option. Opaque to the frontend.
+  metadata?: unknown;
+}
+
+export interface PendingConfirmation {
+  key: string;
+  kind: PendingConfirmationKind;
+  title: string;
+  description: string;
+  confirmLabel: string;
+  cancelLabel: string;
+  targets: PendingConfirmationTarget[];
+  truncatedTargetCount: number;
+  expiresAt: number;
+  options?: PendingConfirmationOption[];
+  // Free-form context the route handler reads on confirm (e.g. import params
+  // captured at search time so the user can say "add a bicycle at (5,0,0)").
+  context?: Record<string, unknown>;
+}
+
 export interface ChatSession {
   id: string;
   messages: ChatMessage[];
   toolSummaries: string[];
   attachments: ChatAttachment[];
+  pendingConfirmations: Map<string, PendingConfirmation>;
   createdAt: number;
   updatedAt: number;
 }
@@ -46,6 +85,11 @@ export interface ChatToolResult {
   data?: unknown;
 }
 
+export interface ChatStatusNote {
+  kind: "no_assistant_output";
+  text: string;
+}
+
 export interface ChatResponsePayload {
   ok: true;
   sessionId: string;
@@ -53,6 +97,8 @@ export interface ChatResponsePayload {
   messages: ChatMessage[];
   toolCalls: ToolCallLogEntry[];
   attachments: ChatAttachmentSummary[];
+  statusNote?: ChatStatusNote;
+  pendingConfirmations: PendingConfirmation[];
 }
 
 export interface ChatAttachmentSummary {

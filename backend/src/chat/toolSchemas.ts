@@ -414,5 +414,221 @@ export const chatToolSchemas = [
       properties: {},
       additionalProperties: false
     }
+  },
+  {
+    type: "function",
+    name: "delete_object",
+    description:
+      "Request deletion of one Unity object by instanceId. DESTRUCTIVE. This tool only creates a confirmation prompt for the user in the UI — it does NOT delete on its own. The user clicks Confirm or Cancel; the backend resolves the deletion outside this chat call. For deleting many objects at once, use delete_objects instead.",
+    parameters: {
+      type: "object",
+      properties: {
+        instanceId: {
+          type: "number",
+          description: "The exact instanceId from list_scene_objects."
+        }
+      },
+      required: ["instanceId"],
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "delete_objects",
+    description:
+      "Request deletion of MANY Unity objects in one prompt by instanceId list. DESTRUCTIVE. Like delete_object, this only creates a single confirmation prompt for the user; it never deletes on its own. Use for 'delete all', 'delete every X', or any multi-target deletion request after calling list_scene_objects.",
+    parameters: {
+      type: "object",
+      properties: {
+        instanceIds: {
+          type: "array",
+          description: "Array of exact instanceIds from list_scene_objects. Must be non-empty.",
+          items: { type: "number" }
+        }
+      },
+      required: ["instanceIds"],
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "duplicate_object",
+    description:
+      "Duplicate one existing object by instanceId. Copies type, name (deduped), and transform. For lights, also copies light properties. For imported models this is not supported in v1.",
+    parameters: {
+      type: "object",
+      properties: {
+        instanceId: {
+          type: "number",
+          description: "The exact instanceId from list_scene_objects."
+        },
+        newName: {
+          type: "string",
+          description: "Optional requested name. Backend dedupes if needed."
+        },
+        positionOffset: {
+          type: "object",
+          description:
+            "Optional offset added to the source position. Include only axes that should shift. Defaults to no offset (duplicate overlaps the source).",
+          properties: {
+            x: { type: "number" },
+            y: { type: "number" },
+            z: { type: "number" }
+          },
+          additionalProperties: false
+        }
+      },
+      required: ["instanceId"],
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "apply_texture_to_object",
+    description:
+      "Apply an uploaded texture attachment to an existing renderable object's first material slot. REPLACES the object's current generated material. Only use textureAttachmentId values from the available attachments list.",
+    parameters: {
+      type: "object",
+      properties: {
+        instanceId: {
+          type: "number",
+          description: "The exact instanceId from list_scene_objects."
+        },
+        textureAttachmentId: {
+          type: "string",
+          description: "Uploaded texture attachment id. Must be a texture attachment."
+        }
+      },
+      required: ["instanceId", "textureAttachmentId"],
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "set_material_color",
+    description:
+      "Set a solid color on an existing renderable object's material. REPLACES the object's current generated material with a fresh one in the chosen color. Any previous texture on the object is lost.",
+    parameters: {
+      type: "object",
+      properties: {
+        instanceId: {
+          type: "number",
+          description: "The exact instanceId from list_scene_objects."
+        },
+        color: {
+          type: "string",
+          description: "Hex color in #RRGGBB or #RRGGBBAA format."
+        }
+      },
+      required: ["instanceId", "color"],
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "batch_apply_texture_to_objects",
+    description:
+      "Apply the SAME uploaded texture to MANY existing renderable objects in one call. Use this whenever the user wants a texture on several objects (e.g. every cube in a grid, all imported models). Creates one shared material and assigns it to every target. REPLACES each target's current generated material.",
+    parameters: {
+      type: "object",
+      properties: {
+        instanceIds: {
+          type: "array",
+          description: "Exact instanceIds from list_scene_objects. Non-empty.",
+          items: { type: "number" }
+        },
+        textureAttachmentId: {
+          type: "string",
+          description: "Uploaded texture attachment id. Must be a texture attachment."
+        }
+      },
+      required: ["instanceIds", "textureAttachmentId"],
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "find_online_model",
+    description:
+      "Search free 3D model catalogs (Poly Pizza, Sketchfab) for a model matching the user's request and present 1-6 candidates as a UI confirmation card. The user picks one of the options to actually import it; this tool does NOT add anything to the scene on its own. Use whenever the user asks to add a real-world object you don't have locally (e.g. 'add a bicycle', 'put a coffee mug on the table'). Use simple common-noun queries (e.g. 'bicycle' not 'Specialized Tarmac SL7').",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description:
+            "Search keyword. Plain common-noun queries work best (e.g. 'bicycle', 'tree', 'lamp post')."
+        },
+        sources: {
+          type: "string",
+          enum: ["poly_pizza", "sketchfab", "both"],
+          description:
+            "Which catalog(s) to query. Defaults to 'both' when omitted."
+        },
+        name: {
+          type: "string",
+          description:
+            "Optional GameObject name in Unity after import. Defaults to the catalog model title."
+        },
+        position: {
+          type: "object",
+          description:
+            "Optional initial world position. Defaults to (0,0,0).",
+          properties: {
+            x: { type: "number" },
+            y: { type: "number" },
+            z: { type: "number" }
+          },
+          required: ["x", "y", "z"],
+          additionalProperties: false
+        },
+        rotation: {
+          type: "object",
+          description: "Optional initial euler rotation in degrees.",
+          properties: {
+            x: { type: "number" },
+            y: { type: "number" },
+            z: { type: "number" }
+          },
+          required: ["x", "y", "z"],
+          additionalProperties: false
+        },
+        scale: {
+          type: "object",
+          description: "Optional initial scale. Each axis must be > 0.",
+          properties: {
+            x: { type: "number" },
+            y: { type: "number" },
+            z: { type: "number" }
+          },
+          required: ["x", "y", "z"],
+          additionalProperties: false
+        }
+      },
+      required: ["query"],
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "batch_set_material_color",
+    description:
+      "Set the SAME solid color on MANY existing renderable objects in one call. Use this whenever the user wants a color on several objects (e.g. make every cube red). Creates one shared material and assigns it to every target. REPLACES each target's current generated material; previous textures are lost.",
+    parameters: {
+      type: "object",
+      properties: {
+        instanceIds: {
+          type: "array",
+          description: "Exact instanceIds from list_scene_objects. Non-empty.",
+          items: { type: "number" }
+        },
+        color: {
+          type: "string",
+          description: "Hex color in #RRGGBB or #RRGGBBAA format."
+        }
+      },
+      required: ["instanceIds", "color"],
+      additionalProperties: false
+    }
   }
 ] as const;

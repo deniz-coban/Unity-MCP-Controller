@@ -1,571 +1,41 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
+import { ActivityPanel } from "./components/ActivityPanel";
+import { ChatPanel } from "./components/ChatPanel";
+import { ManualDrawer } from "./components/ManualDrawer";
+import { TopBar } from "./components/TopBar";
+import {
+  BackendStatus,
+  DisplayChatMessage,
+  LOCAL_NOTES_LIMIT,
+  LogEntry,
+  SCENE_MUTATING_TOOLS,
+  WELCOME_MESSAGE,
+  buildCreateLightRequest,
+  buildCreateObjectRequest,
+  buildEditObjectRequest,
+  buildImportModelFormData,
+  chatSessionStorageKey,
+  defaultCreateLightValues,
+  defaultCreateObjectValues,
+  defaultEditObjectValues,
+  defaultImportModelValues,
+  editValuesFromSceneObject,
+  extractSceneObject,
+  extractSceneObjects,
+  formatError,
+  getInitialChatSessionId,
+  sceneObjectSummaryFromDetails
+} from "./helpers";
 import type {
   BackendMode,
   ChatAttachment,
   ChatMessage,
   ChatToolCall,
-  CreateLightPayload,
-  CreateObjectPayload,
-  EditObjectPayload,
+  PendingConfirmation,
   SceneObjectDetails,
-  SceneObjectSummary,
-  UnityDefaultObjectType,
-  UnityLightType,
-  UnityActionErrorResponse
+  SceneObjectSummary
 } from "./types";
-
-type BackendStatus = "checking" | "online" | "offline";
-
-interface LogEntry {
-  id: number;
-  tone: "success" | "error";
-  title: string;
-  details?: string[];
-}
-
-const chatSessionStorageKey = "unity-mcp-controller-chat-session-id";
-
-const getInitialChatSessionId = (): string => {
-  const existing = window.localStorage.getItem(chatSessionStorageKey);
-
-  if (existing) {
-    return existing;
-  }
-
-  const next =
-    typeof window.crypto?.randomUUID === "function"
-      ? window.crypto.randomUUID()
-      : `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  window.localStorage.setItem(chatSessionStorageKey, next);
-  return next;
-};
-
-const defaultCreateObjectValues = {
-  type: "cube" as UnityDefaultObjectType,
-  name: "Cube",
-  textureFile: null as File | null,
-  positionX: "0",
-  positionY: "0",
-  positionZ: "0",
-  rotationX: "0",
-  rotationY: "0",
-  rotationZ: "0",
-  uniformScale: "1",
-  scaleX: "1",
-  scaleY: "1",
-  scaleZ: "1"
-};
-
-const defaultEditObjectValues = {
-  name: "",
-  positionX: "0",
-  positionY: "0",
-  positionZ: "0",
-  rotationX: "0",
-  rotationY: "0",
-  rotationZ: "0",
-  scaleX: "1",
-  scaleY: "1",
-  scaleZ: "1",
-  lightColor: "#ffffff",
-  lightIntensity: "1",
-  lightRange: "10",
-  lightSpotAngle: "30"
-};
-
-const defaultImportModelValues = {
-  file: null as File | null,
-  name: "Model",
-  textureFile: null as File | null,
-  positionX: "0",
-  positionY: "0",
-  positionZ: "0",
-  rotationX: "0",
-  rotationY: "0",
-  rotationZ: "0",
-  uniformScale: "1",
-  scaleX: "1",
-  scaleY: "1",
-  scaleZ: "1"
-};
-
-const lightDefaults: Record<
-  UnityLightType,
-  {
-    name: string;
-    positionX: string;
-    positionY: string;
-    positionZ: string;
-    rotationX: string;
-    rotationY: string;
-    rotationZ: string;
-    intensity: string;
-    color: string;
-  }
-> = {
-  directional: {
-    name: "Directional Light",
-    positionX: "0",
-    positionY: "3",
-    positionZ: "0",
-    rotationX: "50",
-    rotationY: "-30",
-    rotationZ: "0",
-    intensity: "1",
-    color: "#ffffff"
-  },
-  point: {
-    name: "Point Light",
-    positionX: "0",
-    positionY: "3",
-    positionZ: "0",
-    rotationX: "0",
-    rotationY: "0",
-    rotationZ: "0",
-    intensity: "1",
-    color: "#ffffff"
-  },
-  spot: {
-    name: "Spot Light",
-    positionX: "0",
-    positionY: "3",
-    positionZ: "0",
-    rotationX: "50",
-    rotationY: "0",
-    rotationZ: "0",
-    intensity: "1",
-    color: "#ffffff"
-  }
-};
-
-const defaultCreateLightValues = {
-  type: "directional" as UnityLightType,
-  ...lightDefaults.directional
-};
-
-const objectTypeOptions: Array<{ value: UnityDefaultObjectType; label: string }> = [
-  { value: "cube", label: "Cube" },
-  { value: "sphere", label: "Sphere" },
-  { value: "capsule", label: "Capsule" },
-  { value: "cylinder", label: "Cylinder" },
-  { value: "plane", label: "Plane" },
-  { value: "quad", label: "Quad" }
-];
-
-const lightTypeOptions: Array<{ value: UnityLightType; label: string }> = [
-  { value: "directional", label: "Directional Light" },
-  { value: "point", label: "Point Light" },
-  { value: "spot", label: "Spot Light" }
-];
-
-const scalePresets = ["0.01", "0.1", "1", "10", "100", "1000"];
-const textureFilePattern = /\.(png|jpe?g)$/i;
-const colorHexPattern = /^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
-
-const getDefaultCreateObjectValues = (type: UnityDefaultObjectType) => {
-  const option = objectTypeOptions.find((item) => item.value === type);
-
-  return {
-    ...defaultCreateObjectValues,
-    type,
-    name: option?.label ?? "Object"
-  };
-};
-
-const getDefaultCreateLightValues = (type: UnityLightType) => ({
-  type,
-  ...lightDefaults[type]
-});
-
-const formatError = (error: unknown): string[] => {
-  const maybeError = error as Partial<UnityActionErrorResponse>;
-
-  if (maybeError.details?.length) {
-    return [maybeError.error ?? "Request failed", ...maybeError.details];
-  }
-
-  if (typeof maybeError.error === "string") {
-    return [maybeError.error];
-  }
-
-  return ["Request failed. Check that the backend is running."];
-};
-
-const buildCreateObjectRequest = (
-  values: typeof defaultCreateObjectValues
-): CreateObjectPayload | FormData | string => {
-  const name = values.name.trim();
-  const position = {
-    x: Number(values.positionX),
-    y: Number(values.positionY),
-    z: Number(values.positionZ)
-  };
-  const rotation = {
-    x: Number(values.rotationX),
-    y: Number(values.rotationY),
-    z: Number(values.rotationZ)
-  };
-  const scale = {
-    x: Number(values.scaleX),
-    y: Number(values.scaleY),
-    z: Number(values.scaleZ)
-  };
-
-  if (!name) {
-    return "Object name is required.";
-  }
-
-  if (
-    !Number.isFinite(position.x) ||
-    !Number.isFinite(position.y) ||
-    !Number.isFinite(position.z)
-  ) {
-    return "Position values must be valid numbers.";
-  }
-
-  if (
-    !Number.isFinite(rotation.x) ||
-    !Number.isFinite(rotation.y) ||
-    !Number.isFinite(rotation.z)
-  ) {
-    return "Rotation values must be valid numbers.";
-  }
-
-  if (
-    !Number.isFinite(scale.x) ||
-    !Number.isFinite(scale.y) ||
-    !Number.isFinite(scale.z)
-  ) {
-    return "Scale values must be valid numbers.";
-  }
-
-  if (scale.x <= 0 || scale.y <= 0 || scale.z <= 0) {
-    return "Scale values must be greater than 0.";
-  }
-
-  if (values.textureFile && !textureFilePattern.test(values.textureFile.name)) {
-    return "Texture file must be a .png, .jpg, or .jpeg file.";
-  }
-
-  const payload: CreateObjectPayload = {
-    type: values.type,
-    name,
-    position,
-    rotation,
-    scale
-  };
-
-  if (!values.textureFile) {
-    return payload;
-  }
-
-  const formData = new FormData();
-  formData.append("type", payload.type);
-  formData.append("name", payload.name);
-  formData.append("positionX", String(position.x));
-  formData.append("positionY", String(position.y));
-  formData.append("positionZ", String(position.z));
-  formData.append("rotationX", String(rotation.x));
-  formData.append("rotationY", String(rotation.y));
-  formData.append("rotationZ", String(rotation.z));
-  formData.append("scaleX", String(scale.x));
-  formData.append("scaleY", String(scale.y));
-  formData.append("scaleZ", String(scale.z));
-  formData.append("texture", values.textureFile);
-
-  return formData;
-};
-
-const buildCreateLightRequest = (
-  values: typeof defaultCreateLightValues
-): CreateLightPayload | string => {
-  const name = values.name.trim();
-  const position = {
-    x: Number(values.positionX),
-    y: Number(values.positionY),
-    z: Number(values.positionZ)
-  };
-  const rotation = {
-    x: Number(values.rotationX),
-    y: Number(values.rotationY),
-    z: Number(values.rotationZ)
-  };
-  const intensity = Number(values.intensity);
-  const color = values.color.trim();
-
-  if (!name) {
-    return "Light name is required.";
-  }
-
-  if (
-    !Number.isFinite(position.x) ||
-    !Number.isFinite(position.y) ||
-    !Number.isFinite(position.z)
-  ) {
-    return "Position values must be valid numbers.";
-  }
-
-  if (
-    !Number.isFinite(rotation.x) ||
-    !Number.isFinite(rotation.y) ||
-    !Number.isFinite(rotation.z)
-  ) {
-    return "Rotation values must be valid numbers.";
-  }
-
-  if (!Number.isFinite(intensity) || intensity < 0) {
-    return "Intensity must be a valid number greater than or equal to 0.";
-  }
-
-  if (!colorHexPattern.test(color)) {
-    return "Color must be #RRGGBB or #RRGGBBAA.";
-  }
-
-  return {
-    type: values.type,
-    name,
-    position,
-    rotation,
-    intensity,
-    color
-  };
-};
-
-const fileNameToObjectName = (fileName: string): string => {
-  const withoutExtension = fileName.replace(/\.[^/.]+$/, "");
-  const cleaned = withoutExtension.replace(/[^a-zA-Z0-9._-]+/g, "_");
-  return cleaned || "Model";
-};
-
-const buildImportModelFormData = (
-  values: typeof defaultImportModelValues
-): FormData | string => {
-  const name = values.name.trim();
-  const position = {
-    x: Number(values.positionX),
-    y: Number(values.positionY),
-    z: Number(values.positionZ)
-  };
-  const rotation = {
-    x: Number(values.rotationX),
-    y: Number(values.rotationY),
-    z: Number(values.rotationZ)
-  };
-  const scale = {
-    x: Number(values.scaleX),
-    y: Number(values.scaleY),
-    z: Number(values.scaleZ)
-  };
-
-  if (!values.file) {
-    return "Model file is required.";
-  }
-
-  if (!name) {
-    return "Object name is required.";
-  }
-
-  if (!/\.(fbx|obj)$/i.test(values.file.name)) {
-    return "Model file must be an .fbx or .obj file.";
-  }
-
-  if (values.textureFile && !textureFilePattern.test(values.textureFile.name)) {
-    return "Texture file must be a .png, .jpg, or .jpeg file.";
-  }
-
-  if (
-    !Number.isFinite(position.x) ||
-    !Number.isFinite(position.y) ||
-    !Number.isFinite(position.z)
-  ) {
-    return "Position values must be valid numbers.";
-  }
-
-  if (
-    !Number.isFinite(rotation.x) ||
-    !Number.isFinite(rotation.y) ||
-    !Number.isFinite(rotation.z)
-  ) {
-    return "Rotation values must be valid numbers.";
-  }
-
-  if (
-    !Number.isFinite(scale.x) ||
-    !Number.isFinite(scale.y) ||
-    !Number.isFinite(scale.z)
-  ) {
-    return "Scale values must be valid numbers.";
-  }
-
-  if (scale.x <= 0 || scale.y <= 0 || scale.z <= 0) {
-    return "Scale values must be greater than 0.";
-  }
-
-  const formData = new FormData();
-  formData.append("model", values.file);
-  formData.append("name", name);
-  formData.append("positionX", String(position.x));
-  formData.append("positionY", String(position.y));
-  formData.append("positionZ", String(position.z));
-  formData.append("rotationX", String(rotation.x));
-  formData.append("rotationY", String(rotation.y));
-  formData.append("rotationZ", String(rotation.z));
-  formData.append("scaleX", String(scale.x));
-  formData.append("scaleY", String(scale.y));
-  formData.append("scaleZ", String(scale.z));
-  if (values.textureFile) {
-    formData.append("texture", values.textureFile);
-  }
-
-  return formData;
-};
-
-const editValuesFromSceneObject = (
-  object: SceneObjectDetails
-): typeof defaultEditObjectValues => ({
-  name: object.name,
-  positionX: String(object.position.x),
-  positionY: String(object.position.y),
-  positionZ: String(object.position.z),
-  rotationX: String(object.rotation.x),
-  rotationY: String(object.rotation.y),
-  rotationZ: String(object.rotation.z),
-  scaleX: String(object.scale.x),
-  scaleY: String(object.scale.y),
-  scaleZ: String(object.scale.z),
-  lightColor: object.light?.colorHex ?? "#ffffff",
-  lightIntensity: String(object.light?.intensity ?? 1),
-  lightRange: String(object.light?.range ?? 10),
-  lightSpotAngle: String(object.light?.spotAngle ?? 30)
-});
-
-const sceneObjectSummaryFromDetails = (
-  object: SceneObjectDetails
-): SceneObjectSummary => ({
-  name: object.name,
-  instanceId: object.instanceId,
-  path: object.path,
-  sceneName: object.sceneName,
-  sceneFilePath: object.sceneFilePath,
-  scenePath: object.scenePath,
-  componentTypes: object.componentTypes,
-  hasLight: object.hasLight,
-  hasRenderer: object.hasRenderer,
-  hasCamera: object.hasCamera,
-  category: object.category,
-  displayName: object.displayName
-});
-
-const extractSceneObjects = (response: { data?: unknown }): SceneObjectSummary[] => {
-  const data = response.data as { objects?: unknown } | undefined;
-  return Array.isArray(data?.objects) ? (data.objects as SceneObjectSummary[]) : [];
-};
-
-const extractSceneObject = (response: { data?: unknown }): SceneObjectDetails | undefined => {
-  const data = response.data as { object?: unknown } | undefined;
-  return data?.object as SceneObjectDetails | undefined;
-};
-
-const buildEditObjectRequest = (
-  selectedObject: SceneObjectDetails | null,
-  values: typeof defaultEditObjectValues
-): EditObjectPayload | string => {
-  if (!selectedObject) {
-    return "Select a scene object first.";
-  }
-
-  const name = values.name.trim();
-  const position = {
-    x: Number(values.positionX),
-    y: Number(values.positionY),
-    z: Number(values.positionZ)
-  };
-  const rotation = {
-    x: Number(values.rotationX),
-    y: Number(values.rotationY),
-    z: Number(values.rotationZ)
-  };
-  const scale = {
-    x: Number(values.scaleX),
-    y: Number(values.scaleY),
-    z: Number(values.scaleZ)
-  };
-
-  if (!name) {
-    return "Object name is required.";
-  }
-
-  if (
-    !Number.isFinite(position.x) ||
-    !Number.isFinite(position.y) ||
-    !Number.isFinite(position.z)
-  ) {
-    return "Position values must be valid numbers.";
-  }
-
-  if (
-    !Number.isFinite(rotation.x) ||
-    !Number.isFinite(rotation.y) ||
-    !Number.isFinite(rotation.z)
-  ) {
-    return "Rotation values must be valid numbers.";
-  }
-
-  if (
-    !Number.isFinite(scale.x) ||
-    !Number.isFinite(scale.y) ||
-    !Number.isFinite(scale.z)
-  ) {
-    return "Scale values must be valid numbers.";
-  }
-
-  if (scale.x <= 0 || scale.y <= 0 || scale.z <= 0) {
-    return "Scale values must be greater than 0.";
-  }
-
-  const payload: EditObjectPayload = {
-    instanceId: selectedObject.instanceId,
-    name,
-    position,
-    rotation,
-    scale
-  };
-
-  if (selectedObject.hasLight) {
-    const intensity = Number(values.lightIntensity);
-    const range = Number(values.lightRange);
-    const spotAngle = Number(values.lightSpotAngle);
-
-    if (!Number.isFinite(intensity) || intensity < 0) {
-      return "Light intensity must be a valid number greater than or equal to 0.";
-    }
-
-    if (!Number.isFinite(range) || range <= 0) {
-      return "Light range must be a valid number greater than 0.";
-    }
-
-    if (!colorHexPattern.test(values.lightColor.trim())) {
-      return "Light color must be #RRGGBB or #RRGGBBAA.";
-    }
-
-    payload.light = {
-      color: values.lightColor.trim(),
-      intensity,
-      range
-    };
-
-    if (selectedObject.light?.lightType === "spot") {
-      if (!Number.isFinite(spotAngle) || spotAngle <= 0 || spotAngle > 179) {
-        return "Spot angle must be greater than 0 and less than or equal to 179.";
-      }
-
-      payload.light.spotAngle = spotAngle;
-    }
-  }
-
-  return payload;
-};
 
 export default function App() {
   const createTextureInputRef = useRef<HTMLInputElement>(null);
@@ -580,17 +50,31 @@ export default function App() {
   const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
   const [chatSessionId, setChatSessionId] = useState(getInitialChatSessionId);
   const [chatInput, setChatInput] = useState("");
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
-    {
-      id: "welcome",
-      role: "assistant",
-      content:
-        "Describe what you want to build in Unity. I can call safe scene tools and show each tool call here.",
-      createdAt: Date.now()
-    }
-  ]);
+  const [serverChatMessages, setServerChatMessages] = useState<ChatMessage[]>([]);
+  const [pendingUserMessage, setPendingUserMessage] =
+    useState<DisplayChatMessage | null>(null);
+  const [localChatNotes, setLocalChatNotes] = useState<DisplayChatMessage[]>([]);
   const [chatToolCalls, setChatToolCalls] = useState<ChatToolCall[]>([]);
   const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
+  const [pendingConfirmations, setPendingConfirmations] = useState<
+    PendingConfirmation[]
+  >([]);
+  const [resolvingConfirmationKey, setResolvingConfirmationKey] = useState<
+    string | null
+  >(null);
+  const [healthLoaded, setHealthLoaded] = useState(false);
+  const [openaiConfigured, setOpenaiConfigured] = useState<boolean | undefined>(
+    undefined
+  );
+  const [unityProjectPathConfigured, setUnityProjectPathConfigured] = useState<
+    boolean | undefined
+  >(undefined);
+  const [polyPizzaConfigured, setPolyPizzaConfigured] = useState<
+    boolean | undefined
+  >(undefined);
+  const [sketchfabConfigured, setSketchfabConfigured] = useState<
+    boolean | undefined
+  >(undefined);
   const [createObjectValues, setCreateObjectValues] = useState(
     defaultCreateObjectValues
   );
@@ -671,9 +155,15 @@ export default function App() {
       if (health.mode) {
         setBackendMode(health.mode);
       }
+      setOpenaiConfigured(health.openai?.configured);
+      setUnityProjectPathConfigured(health.mcp?.unityProjectPathConfigured);
+      setPolyPizzaConfigured(health.onlineModels?.polyPizzaConfigured);
+      setSketchfabConfigured(health.onlineModels?.sketchfabConfigured);
+      setHealthLoaded(true);
       setBackendStatus(health.ok ? "online" : "offline");
     } catch {
       setBackendStatus("offline");
+      setHealthLoaded(true);
     }
   };
 
@@ -725,44 +215,53 @@ export default function App() {
     });
   };
 
+  const fetchAndApplySceneObjects = async (): Promise<{
+    ok: true;
+    message?: string;
+    count: number;
+  }> => {
+    const response = await api.sceneObjects();
+    if (!response.ok) {
+      throw response;
+    }
+
+    const objects = extractSceneObjects(response);
+    setSceneObjects(objects);
+
+    if (selectedSceneObject) {
+      const selectedStillExists = objects.some(
+        (object) => object.instanceId === selectedSceneObject.instanceId
+      );
+
+      if (selectedStillExists) {
+        const detailsResponse = await api.sceneObject(selectedSceneObject.instanceId);
+        if (!detailsResponse.ok) {
+          throw detailsResponse;
+        }
+
+        const object = extractSceneObject(detailsResponse);
+        if (object) {
+          applySceneObjectDetails(object);
+        }
+      } else {
+        setSelectedSceneObject(null);
+        setEditObjectValues(defaultEditObjectValues);
+        setSceneObjectSearch("");
+      }
+    }
+
+    return { ok: true, message: response.message, count: objects.length };
+  };
+
   const refreshSceneObjects = async () => {
     setIsBusy(true);
 
     try {
-      const response = await api.sceneObjects();
-      if (!response.ok) {
-        throw response;
-      }
-
-      const objects = extractSceneObjects(response);
-      setSceneObjects(objects);
-
-      if (selectedSceneObject) {
-        const selectedStillExists = objects.some(
-          (object) => object.instanceId === selectedSceneObject.instanceId
-        );
-
-        if (selectedStillExists) {
-          const detailsResponse = await api.sceneObject(selectedSceneObject.instanceId);
-          if (!detailsResponse.ok) {
-            throw detailsResponse;
-          }
-
-          const object = extractSceneObject(detailsResponse);
-          if (object) {
-            applySceneObjectDetails(object);
-          }
-        } else {
-          setSelectedSceneObject(null);
-          setEditObjectValues(defaultEditObjectValues);
-          setSceneObjectSearch("");
-        }
-      }
-
+      const result = await fetchAndApplySceneObjects();
       addLog({
         tone: "success",
         title: "Refresh scene objects",
-        details: [response.message ?? `Loaded ${objects.length} scene objects.`]
+        details: [result.message ?? `Loaded ${result.count} scene objects.`]
       });
     } catch (error) {
       addLog({
@@ -772,6 +271,17 @@ export default function App() {
       });
     } finally {
       setIsBusy(false);
+    }
+  };
+
+  const silentRefreshSceneObjects = async () => {
+    if (isBusy) {
+      return;
+    }
+    try {
+      await fetchAndApplySceneObjects();
+    } catch {
+      // Swallowed by design: this is a background sync, not a user action.
     }
   };
 
@@ -964,6 +474,18 @@ export default function App() {
     }
   };
 
+  const appendLocalNotes = (notes: DisplayChatMessage[]) => {
+    if (notes.length === 0) {
+      return;
+    }
+    setLocalChatNotes((current) => {
+      const next = [...current, ...notes];
+      return next.length > LOCAL_NOTES_LIMIT
+        ? next.slice(next.length - LOCAL_NOTES_LIMIT)
+        : next;
+    });
+  };
+
   const submitChat = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
@@ -973,15 +495,16 @@ export default function App() {
       return;
     }
 
-    const optimisticUserMessage: ChatMessage = {
-      id: `local-${Date.now()}`,
+    const submittedAt = Date.now();
+    const optimisticUserMessage: DisplayChatMessage = {
+      id: `local-pending-${submittedAt}`,
       role: "user",
       content: message,
-      createdAt: Date.now()
+      createdAt: submittedAt
     };
 
     setChatInput("");
-    setChatMessages((current) => [...current, optimisticUserMessage]);
+    setPendingUserMessage(optimisticUserMessage);
     setIsChatBusy(true);
 
     void api
@@ -989,9 +512,32 @@ export default function App() {
       .then((response) => {
         setChatSessionId(response.sessionId);
         window.localStorage.setItem(chatSessionStorageKey, response.sessionId);
-        setChatMessages(response.messages.length ? response.messages : [optimisticUserMessage]);
+
+        if (response.messages.length > 0) {
+          setServerChatMessages(response.messages);
+          setPendingUserMessage(null);
+        } else {
+          // Server returned no canonical history — keep the optimistic
+          // message visible as a local note so it doesn't vanish.
+          appendLocalNotes([optimisticUserMessage]);
+          setPendingUserMessage(null);
+        }
+
+        if (response.statusNote) {
+          const noteTime = Date.now();
+          appendLocalNotes([
+            {
+              id: `local-system-${noteTime}`,
+              role: "system",
+              content: response.statusNote.text,
+              createdAt: noteTime
+            }
+          ]);
+        }
+
         setChatToolCalls((current) => [...response.toolCalls, ...current].slice(0, 80));
         setChatAttachments(response.attachments);
+        setPendingConfirmations(response.pendingConfirmations ?? []);
 
         if (response.toolCalls.length > 0) {
           addLog({
@@ -1008,22 +554,40 @@ export default function App() {
                 }`
             )
           });
+
+          const mutatedScene = response.toolCalls.some(
+            (toolCall) =>
+              toolCall.status === "success" &&
+              SCENE_MUTATING_TOOLS.has(toolCall.toolName)
+          );
+
+          if (mutatedScene) {
+            void silentRefreshSceneObjects();
+          }
         }
       })
       .catch((error) => {
-        setChatMessages((current) => [
-          ...current,
+        const failureTime = Date.now();
+        const failureDetails = formatError(error);
+        appendLocalNotes([
           {
-            id: `error-${Date.now()}`,
+            ...optimisticUserMessage,
+            id: `local-failed-user-${failureTime}`,
+            createdAt: failureTime
+          },
+          {
+            id: `local-failed-error-${failureTime}`,
             role: "assistant",
-            content: formatError(error).join("\n"),
-            createdAt: Date.now()
+            content: failureDetails[0] ?? "Chat request failed.",
+            details: failureDetails.length > 1 ? failureDetails : undefined,
+            createdAt: failureTime + 1
           }
         ]);
+        setPendingUserMessage(null);
         addLog({
           tone: "error",
           title: "Chat request failed",
-          details: formatError(error)
+          details: failureDetails
         });
       })
       .finally(() => {
@@ -1031,987 +595,233 @@ export default function App() {
       });
   };
 
-  const formatToolArguments = (value: unknown): string => {
-    if (!value || (typeof value === "object" && Object.keys(value).length === 0)) {
-      return "No arguments";
+  const resolveConfirmation = async (
+    confirmation: PendingConfirmation,
+    action: "confirm" | "cancel",
+    optionKey?: string
+  ) => {
+    if (resolvingConfirmationKey) {
+      return;
     }
+    setResolvingConfirmationKey(confirmation.key);
 
     try {
-      const text = JSON.stringify(value);
-      return text.length > 180 ? `${text.slice(0, 180)}...` : text;
-    } catch {
-      return String(value);
+      const response = await api.resolveConfirmation(
+        chatSessionId,
+        confirmation.key,
+        action,
+        optionKey
+      );
+      setPendingConfirmations(response.pendingConfirmations ?? []);
+
+      const time = Date.now();
+      const isCancel = response.outcome === "cancelled";
+      const note: DisplayChatMessage = isCancel
+        ? {
+            id: `local-confirm-cancel-${confirmation.key}`,
+            role: "system",
+            content: `Cancelled: ${confirmation.title}`,
+            createdAt: time
+          }
+        : {
+            id: `local-confirm-${response.outcome}-${confirmation.key}`,
+            role: "system",
+            content: response.message,
+            details:
+              response.details && response.details.length > 0
+                ? response.details
+                : undefined,
+            createdAt: time
+          };
+      appendLocalNotes([note]);
+
+      addLog({
+        tone: response.outcome === "executed" ? "success" : "error",
+        title:
+          response.outcome === "executed"
+            ? "Confirmation executed"
+            : response.outcome === "cancelled"
+              ? "Confirmation cancelled"
+              : "Confirmation failed",
+        details: [response.message]
+      });
+
+      if (response.outcome === "executed") {
+        void silentRefreshSceneObjects();
+      }
+
+      const followUp = response.followUp;
+      if (followUp) {
+        if (followUp.messages.length > 0) {
+          setServerChatMessages(followUp.messages);
+        }
+        setPendingConfirmations(followUp.pendingConfirmations ?? []);
+        setChatAttachments(followUp.attachments);
+
+        if (followUp.statusNote) {
+          const noteTime = Date.now();
+          appendLocalNotes([
+            {
+              id: `local-system-${noteTime}`,
+              role: "system",
+              content: followUp.statusNote.text,
+              createdAt: noteTime
+            }
+          ]);
+        }
+
+        if (followUp.toolCalls.length > 0) {
+          setChatToolCalls((current) =>
+            [...followUp.toolCalls, ...current].slice(0, 80)
+          );
+          addLog({
+            tone: followUp.toolCalls.some((tc) => tc.status === "error")
+              ? "error"
+              : "success",
+            title: "Continuation tool calls completed",
+            details: followUp.toolCalls.map(
+              (tc) =>
+                `${tc.toolName}: ${tc.status}${
+                  tc.result || tc.error ? ` - ${tc.result ?? tc.error}` : ""
+                }`
+            )
+          });
+
+          const mutatedScene = followUp.toolCalls.some(
+            (tc) =>
+              tc.status === "success" && SCENE_MUTATING_TOOLS.has(tc.toolName)
+          );
+          if (mutatedScene) {
+            void silentRefreshSceneObjects();
+          }
+        }
+      }
+    } catch (error) {
+      const failureTime = Date.now();
+      const failureDetails = formatError(error);
+      appendLocalNotes([
+        {
+          id: `local-confirm-error-${confirmation.key}-${failureTime}`,
+          role: "system",
+          content: failureDetails[0] ?? "Confirmation request failed.",
+          details: failureDetails.length > 1 ? failureDetails : undefined,
+          createdAt: failureTime
+        }
+      ]);
+      addLog({
+        tone: "error",
+        title: "Confirmation request failed",
+        details: failureDetails
+      });
+    } finally {
+      setResolvingConfirmationKey(null);
     }
   };
 
+  const renderedChatMessages = useMemo<DisplayChatMessage[]>(() => {
+    const merged: DisplayChatMessage[] = [];
+
+    for (const m of serverChatMessages) {
+      merged.push({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        createdAt: m.createdAt
+      });
+    }
+    for (const note of localChatNotes) {
+      merged.push(note);
+    }
+    if (pendingUserMessage) {
+      merged.push(pendingUserMessage);
+    }
+
+    merged.sort((a, b) => a.createdAt - b.createdAt);
+    return [WELCOME_MESSAGE, ...merged];
+  }, [serverChatMessages, localChatNotes, pendingUserMessage]);
+
+  const showOpenAiBanner = healthLoaded && openaiConfigured === false;
+  const showUnityProjectBanner =
+    healthLoaded &&
+    backendMode === "mcp" &&
+    unityProjectPathConfigured === false;
+  const showOnlineModelsBanner =
+    healthLoaded &&
+    polyPizzaConfigured === false &&
+    sketchfabConfigured === false;
+
   return (
     <main className="app-shell chat-app-shell">
-      <section className="top-bar app-header">
-        <div>
-          <p className="eyebrow">{modeEyebrow}</p>
-          <h1>Unity MCP Controller</h1>
-        </div>
-        <div className="header-actions">
-          <button
-            className="manual-tools-button"
-            onClick={() => setIsDashboardOpen(true)}
-            type="button"
-          >
-            Manual tools
-          </button>
-          <button className={`status-pill ${backendStatus}`} onClick={checkBackend}>
-            <span />
-            {statusLabel}
-          </button>
-        </div>
-      </section>
-
-      <section className="chat-workspace">
-        <section className="chat-panel">
-          <div className="chat-panel-heading">
-            <div>
-              <p className="eyebrow">AI SCENE BUILDER</p>
-              <h2>Tell Unity what to build</h2>
-            </div>
-            <p>{sceneActionSubtitle}</p>
-          </div>
-          <div className="chat-history" aria-live="polite">
-            {chatMessages.map((message) => (
-              <article className={`chat-message ${message.role}`} key={message.id}>
-                <span>{message.role === "user" ? "You" : "Assistant"}</span>
-                <p>{message.content}</p>
-              </article>
-            ))}
-            {isChatBusy ? (
-              <article className="chat-message assistant pending">
-                <span>Assistant</span>
-                <p>
-                  <span className="spinner" /> Thinking and calling Unity tools...
-                </p>
-              </article>
-            ) : null}
-          </div>
-          <div className="chat-attachments">
-            <div>
-              <strong>Attachments</strong>
-              <span>
-                Upload a model or texture, then reference it in chat. Files stay local
-                to this backend session.
-              </span>
-            </div>
-            <div className="file-input-row">
-              <input
-                accept=".fbx,.obj,.png,.jpg,.jpeg"
-                aria-label="Chat attachment"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (file) {
-                    void uploadChatAttachment(file);
-                  }
-                }}
-                ref={chatAttachmentInputRef}
-                type="file"
-              />
-              <button disabled={isUploadingAttachment} type="button">
-                {isUploadingAttachment ? "Uploading..." : "Attach"}
-              </button>
-            </div>
-            {chatAttachments.length > 0 ? (
-              <div className="attachment-list">
-                {chatAttachments.map((attachment) => (
-                  <span key={attachment.id}>
-                    {attachment.kind}: {attachment.originalName}
-                  </span>
-                ))}
-              </div>
-            ) : null}
-          </div>
-          <form className="chat-input-row" onSubmit={submitChat}>
-            <textarea
-              disabled={isChatBusy}
-              onChange={(event) => setChatInput(event.target.value)}
-              placeholder="Describe what you want to build in Unity..."
-              value={chatInput}
-            />
-            <button disabled={isChatBusy || !chatInput.trim()} type="submit">
-              {isChatBusy ? (
-                <>
-                  <span className="spinner" /> Sending
-                </>
-              ) : (
-                "Send"
-              )}
-            </button>
-          </form>
-        </section>
-
-        <aside className="activity-panel">
-          <div className="panel-heading">
-            <h2>Tool-call log</h2>
-            <p>High-level app tools only. Raw Unity MCP tools stay hidden.</p>
-          </div>
-          <div className="activity-list">
-            {chatToolCalls.length === 0 ? (
-              <p className="empty-log">No chat tool calls yet.</p>
-            ) : (
-              chatToolCalls.slice(0, 12).map((toolCall) => (
-                <article className={`activity-entry ${toolCall.status}`} key={toolCall.id}>
-                  <div>
-                    <strong>{toolCall.toolName}</strong>
-                    <span>{toolCall.status}</span>
-                  </div>
-                  <code>{formatToolArguments(toolCall.arguments)}</code>
-                  <p>{toolCall.result ?? toolCall.error ?? "Running..."}</p>
-                </article>
-              ))
-            )}
-          </div>
-          <div className="recent-manual-log">
-            <h2>Recent activity</h2>
-            {recentManualLogs.length === 0 ? (
-              <p className="empty-log">No manual activity.</p>
-            ) : (
-              recentManualLogs.map((log) => (
-                <article className={`mini-log ${log.tone}`} key={log.id}>
-                  <strong>{log.title}</strong>
-                  {log.details?.[0] ? <span>{log.details[0]}</span> : null}
-                </article>
-              ))
-            )}
-          </div>
-        </aside>
-      </section>
-
-      <button
-        aria-label="Close manual tools"
-        className={`drawer-backdrop ${isDashboardOpen ? "open" : ""}`}
-        onClick={() => setIsDashboardOpen(false)}
-        type="button"
+      <TopBar
+        modeEyebrow={modeEyebrow}
+        backendStatus={backendStatus}
+        statusLabel={statusLabel}
+        onCheckBackend={checkBackend}
+        onOpenManualTools={() => setIsDashboardOpen(true)}
       />
 
-      <aside className={`manual-drawer ${isDashboardOpen ? "open" : ""}`}>
-        <div className="drawer-header">
-          <div>
-            <p className="eyebrow">DEBUG DASHBOARD</p>
-            <h2>Manual Unity tools</h2>
-          </div>
-          <button
-            className="secondary-button"
-            onClick={() => setIsDashboardOpen(false)}
-            type="button"
-          >
-            Close
-          </button>
-        </div>
-        <div className="drawer-scroll">
+      <section className="chat-workspace">
+        <ChatPanel
+          showOpenAiBanner={showOpenAiBanner}
+          showUnityProjectBanner={showUnityProjectBanner}
+          showOnlineModelsBanner={showOnlineModelsBanner}
+          sceneActionSubtitle={sceneActionSubtitle}
+          renderedChatMessages={renderedChatMessages}
+          isChatBusy={isChatBusy}
+          pendingConfirmations={pendingConfirmations}
+          resolvingConfirmationKey={resolvingConfirmationKey}
+          onResolveConfirmation={(confirmation, action, optionKey) =>
+            void resolveConfirmation(confirmation, action, optionKey)
+          }
+          chatAttachments={chatAttachments}
+          isUploadingAttachment={isUploadingAttachment}
+          chatAttachmentInputRef={chatAttachmentInputRef}
+          onUploadChatAttachment={(file) => void uploadChatAttachment(file)}
+          chatInput={chatInput}
+          onChatInputChange={setChatInput}
+          onSubmitChat={submitChat}
+        />
 
-      <section className="panel">
-        <div className="panel-heading">
-          <h2>Scene actions</h2>
-          <p>{sceneActionSubtitle}</p>
-        </div>
-        <div className="button-grid">
-          {!isMcpMode ? (
-            <button
-              disabled={isBusy}
-              onClick={() => void runAction("Create mock scene", api.createScene)}
-            >
-              Create mock scene
-            </button>
-          ) : null}
-          <button
-            disabled={isBusy}
-            onClick={() =>
-              void runAction(
-                isMcpMode ? "Save current scene" : "Save mock scene",
-                api.saveScene
-              )
-            }
-          >
-            {isMcpMode ? "Save current scene" : "Save mock scene"}
-          </button>
-        </div>
+        <ActivityPanel
+          chatToolCalls={chatToolCalls}
+          recentManualLogs={recentManualLogs}
+        />
       </section>
 
-      <form className="panel" onSubmit={submitCreateObject}>
-        <div className="panel-heading">
-          <h2>Create default object</h2>
-          <p>Choose a Unity primitive, name it, and set its initial transform.</p>
-        </div>
-        <div className="field-stack">
-          <label>
-            Object type
-            <select
-              value={createObjectValues.type}
-              onChange={(event) => {
-                setCreateObjectValues(
-                  getDefaultCreateObjectValues(
-                    event.target.value as UnityDefaultObjectType
-                  )
-                );
-
-                if (createTextureInputRef.current) {
-                  createTextureInputRef.current.value = "";
-                }
-              }}
-            >
-              {objectTypeOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Object name
-            <input
-              value={createObjectValues.name}
-              onChange={(event) =>
-                setCreateObjectValues((current) => ({
-                  ...current,
-                  name: event.target.value
-                }))
-              }
-              placeholder="MyObject"
-            />
-          </label>
-          <div className="file-field">
-            <label htmlFor="create-texture-file">Texture image (optional)</label>
-            <div className="file-input-row">
-              <input
-                accept=".png,.jpg,.jpeg"
-                id="create-texture-file"
-                onChange={(event) => {
-                  const textureFile = event.target.files?.[0] ?? null;
-                  setCreateObjectValues((current) => ({
-                    ...current,
-                    textureFile
-                  }));
-                }}
-                ref={createTextureInputRef}
-                type="file"
-              />
-              <button
-                className="secondary-button file-clear-button"
-                disabled={!createObjectValues.textureFile || isBusy}
-                onClick={clearCreateTextureFile}
-                type="button"
-              >
-                Clear texture
-              </button>
-            </div>
-          </div>
-          <div className="coordinate-groups">
-            <fieldset>
-              <legend>Position</legend>
-              <div className="coordinate-row">
-                {(["X", "Y", "Z"] as const).map((axis) => (
-                  <label key={axis}>
-                    {axis}
-                    <input
-                      value={createObjectValues[`position${axis}`]}
-                      onChange={(event) =>
-                        setCreateObjectValues((current) => ({
-                          ...current,
-                          [`position${axis}`]: event.target.value
-                        }))
-                      }
-                      inputMode="decimal"
-                    />
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-            <fieldset>
-              <legend>Rotation</legend>
-              <div className="coordinate-row">
-                {(["X", "Y", "Z"] as const).map((axis) => (
-                  <label key={axis}>
-                    {axis}
-                    <input
-                      value={createObjectValues[`rotation${axis}`]}
-                      onChange={(event) =>
-                        setCreateObjectValues((current) => ({
-                          ...current,
-                          [`rotation${axis}`]: event.target.value
-                        }))
-                      }
-                      inputMode="decimal"
-                    />
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-            <fieldset>
-              <legend>Scale</legend>
-              <div className="coordinate-row">
-                {(["X", "Y", "Z"] as const).map((axis) => (
-                  <label key={axis}>
-                    {axis}
-                    <input
-                      value={createObjectValues[`scale${axis}`]}
-                      onChange={(event) =>
-                        setCreateObjectValues((current) => ({
-                          ...current,
-                          [`scale${axis}`]: event.target.value
-                        }))
-                      }
-                      inputMode="decimal"
-                    />
-                  </label>
-                ))}
-              </div>
-              <div className="scale-tools">
-                <label>
-                  Uniform
-                  <input
-                    value={createObjectValues.uniformScale}
-                    onChange={(event) =>
-                      setCreateObjectValues((current) => ({
-                        ...current,
-                        uniformScale: event.target.value
-                      }))
-                    }
-                    inputMode="decimal"
-                  />
-                </label>
-                <button
-                  disabled={isBusy}
-                  onClick={() =>
-                    setCreateObjectValues((current) => ({
-                      ...current,
-                      scaleX: current.uniformScale,
-                      scaleY: current.uniformScale,
-                      scaleZ: current.uniformScale
-                    }))
-                  }
-                  type="button"
-                >
-                  Apply
-                </button>
-              </div>
-              <div className="scale-presets" aria-label="Scale presets">
-                {scalePresets.map((preset) => (
-                  <button
-                    disabled={isBusy}
-                    key={preset}
-                    onClick={() =>
-                      setCreateObjectValues((current) => ({
-                        ...current,
-                        uniformScale: preset,
-                        scaleX: preset,
-                        scaleY: preset,
-                        scaleZ: preset
-                      }))
-                    }
-                    type="button"
-                  >
-                    {preset}
-                  </button>
-                ))}
-              </div>
-            </fieldset>
-          </div>
-        </div>
-        <button disabled={isBusy} type="submit">
-          Create object
-        </button>
-      </form>
-
-      <form className="panel" onSubmit={submitCreateLight}>
-        <div className="panel-heading">
-          <h2>Create light</h2>
-          <p>Create a Unity light with an initial transform, intensity, and color.</p>
-        </div>
-        <div className="field-stack">
-          <label>
-            Light type
-            <select
-              value={createLightValues.type}
-              onChange={(event) =>
-                setCreateLightValues(
-                  getDefaultCreateLightValues(event.target.value as UnityLightType)
-                )
-              }
-            >
-              {lightTypeOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Light name
-            <input
-              value={createLightValues.name}
-              onChange={(event) =>
-                setCreateLightValues((current) => ({
-                  ...current,
-                  name: event.target.value
-                }))
-              }
-              placeholder="Sun"
-            />
-          </label>
-          <div className="coordinate-groups">
-            <fieldset>
-              <legend>Position</legend>
-              <div className="coordinate-row">
-                {(["X", "Y", "Z"] as const).map((axis) => (
-                  <label key={axis}>
-                    {axis}
-                    <input
-                      value={createLightValues[`position${axis}`]}
-                      onChange={(event) =>
-                        setCreateLightValues((current) => ({
-                          ...current,
-                          [`position${axis}`]: event.target.value
-                        }))
-                      }
-                      inputMode="decimal"
-                    />
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-            <fieldset>
-              <legend>Rotation</legend>
-              <div className="coordinate-row">
-                {(["X", "Y", "Z"] as const).map((axis) => (
-                  <label key={axis}>
-                    {axis}
-                    <input
-                      value={createLightValues[`rotation${axis}`]}
-                      onChange={(event) =>
-                        setCreateLightValues((current) => ({
-                          ...current,
-                          [`rotation${axis}`]: event.target.value
-                        }))
-                      }
-                      inputMode="decimal"
-                    />
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-          </div>
-          <div className="coordinate-row">
-            <label>
-              Intensity
-              <input
-                value={createLightValues.intensity}
-                onChange={(event) =>
-                  setCreateLightValues((current) => ({
-                    ...current,
-                    intensity: event.target.value
-                  }))
-                }
-                inputMode="decimal"
-              />
-            </label>
-            <label>
-              Color
-              <input
-                value={createLightValues.color}
-                onChange={(event) =>
-                  setCreateLightValues((current) => ({
-                    ...current,
-                    color: event.target.value
-                  }))
-                }
-                placeholder="#ffffff"
-              />
-            </label>
-            <label>
-              Preview
-              <input
-                aria-label="Light color picker"
-                type="color"
-                value={
-                  colorHexPattern.test(createLightValues.color)
-                    ? createLightValues.color.slice(0, 7)
-                    : "#ffffff"
-                }
-                onChange={(event) =>
-                  setCreateLightValues((current) => ({
-                    ...current,
-                    color: event.target.value
-                  }))
-                }
-              />
-            </label>
-          </div>
-        </div>
-        <button disabled={isBusy} type="submit">
-          Create light
-        </button>
-      </form>
-
-      <form className="panel" onSubmit={submitImportModel}>
-        <div className="panel-heading">
-          <h2>Import model</h2>
-          <p>Upload a small FBX or OBJ model and place it in the scene.</p>
-        </div>
-        <div className="field-stack">
-          <div className="file-field">
-            <label htmlFor="model-file">Model file</label>
-            <div className="file-input-row">
-              <input
-                accept=".fbx,.obj"
-                id="model-file"
-                onChange={(event) => {
-                  const file = event.target.files?.[0] ?? null;
-                  setImportModelValues((current) => ({
-                    ...current,
-                    file,
-                    name:
-                      file && (current.name.trim() === "" || current.name === "Model")
-                        ? fileNameToObjectName(file.name)
-                        : current.name
-                  }));
-                }}
-                ref={modelFileInputRef}
-                type="file"
-              />
-              <button
-                className="secondary-button file-clear-button"
-                disabled={!importModelValues.file || isBusy}
-                onClick={clearModelFile}
-                type="button"
-              >
-                Clear model
-              </button>
-            </div>
-          </div>
-          <div className="file-field">
-            <label htmlFor="model-texture-file">Texture image (optional)</label>
-            <div className="file-input-row">
-              <input
-                accept=".png,.jpg,.jpeg"
-                id="model-texture-file"
-                onChange={(event) => {
-                  const textureFile = event.target.files?.[0] ?? null;
-                  setImportModelValues((current) => ({
-                    ...current,
-                    textureFile
-                  }));
-                }}
-                ref={modelTextureInputRef}
-                type="file"
-              />
-              <button
-                className="secondary-button file-clear-button"
-                disabled={!importModelValues.textureFile || isBusy}
-                onClick={clearModelTextureFile}
-                type="button"
-              >
-                Clear texture
-              </button>
-            </div>
-          </div>
-          <label>
-            Object name
-            <input
-              value={importModelValues.name}
-              onChange={(event) =>
-                setImportModelValues((current) => ({
-                  ...current,
-                  name: event.target.value
-                }))
-              }
-              placeholder="TestTree"
-            />
-          </label>
-          <div className="coordinate-groups">
-            <fieldset>
-              <legend>Position</legend>
-              <div className="coordinate-row">
-                {(["X", "Y", "Z"] as const).map((axis) => (
-                  <label key={axis}>
-                    {axis}
-                    <input
-                      value={importModelValues[`position${axis}`]}
-                      onChange={(event) =>
-                        setImportModelValues((current) => ({
-                          ...current,
-                          [`position${axis}`]: event.target.value
-                        }))
-                      }
-                      inputMode="decimal"
-                    />
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-            <fieldset>
-              <legend>Rotation</legend>
-              <div className="coordinate-row">
-                {(["X", "Y", "Z"] as const).map((axis) => (
-                  <label key={axis}>
-                    {axis}
-                    <input
-                      value={importModelValues[`rotation${axis}`]}
-                      onChange={(event) =>
-                        setImportModelValues((current) => ({
-                          ...current,
-                          [`rotation${axis}`]: event.target.value
-                        }))
-                      }
-                      inputMode="decimal"
-                    />
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-            <fieldset>
-              <legend>Scale</legend>
-              <div className="coordinate-row">
-                {(["X", "Y", "Z"] as const).map((axis) => (
-                  <label key={axis}>
-                    {axis}
-                    <input
-                      value={importModelValues[`scale${axis}`]}
-                      onChange={(event) =>
-                        setImportModelValues((current) => ({
-                          ...current,
-                          [`scale${axis}`]: event.target.value
-                        }))
-                      }
-                      inputMode="decimal"
-                    />
-                  </label>
-                ))}
-              </div>
-              <div className="scale-tools">
-                <label>
-                  Uniform
-                  <input
-                    value={importModelValues.uniformScale}
-                    onChange={(event) =>
-                      setImportModelValues((current) => ({
-                        ...current,
-                        uniformScale: event.target.value
-                      }))
-                    }
-                    inputMode="decimal"
-                  />
-                </label>
-                <button
-                  disabled={isBusy}
-                  onClick={() =>
-                    setImportModelValues((current) => ({
-                      ...current,
-                      scaleX: current.uniformScale,
-                      scaleY: current.uniformScale,
-                      scaleZ: current.uniformScale
-                    }))
-                  }
-                  type="button"
-                >
-                  Apply
-                </button>
-              </div>
-              <div className="scale-presets" aria-label="Scale presets">
-                {scalePresets.map((preset) => (
-                  <button
-                    disabled={isBusy}
-                    key={preset}
-                    onClick={() =>
-                      setImportModelValues((current) => ({
-                        ...current,
-                        uniformScale: preset,
-                        scaleX: preset,
-                        scaleY: preset,
-                        scaleZ: preset
-                      }))
-                    }
-                    type="button"
-                  >
-                    {preset}
-                  </button>
-                ))}
-              </div>
-            </fieldset>
-          </div>
-        </div>
-        <button disabled={isBusy} type="submit">
-          Add model
-        </button>
-      </form>
-
-      <form className="panel" onSubmit={submitEditObject}>
-        <div className="panel-heading split-heading">
-          <div>
-            <h2>Edit existing object</h2>
-            <p>Refresh the active scene, search by name, path, or ID, then edit the selected instance.</p>
-          </div>
-          <button
-            className="secondary-button"
-            disabled={isBusy}
-            onClick={() => void refreshSceneObjects()}
-            type="button"
-          >
-            Refresh scene objects
-          </button>
-        </div>
-        <div className="field-stack">
-          <label>
-            Search scene objects
-            <input
-              value={sceneObjectSearch}
-              onChange={(event) => setSceneObjectSearch(event.target.value)}
-              placeholder="Cube, SampleScene/Cube, or 123456"
-            />
-          </label>
-
-          <div className="object-picker-list" role="listbox" aria-label="Scene objects">
-            {filteredSceneObjects.length > 0 ? (
-              filteredSceneObjects.map((object) => (
-                <button
-                  className={
-                    selectedSceneObject?.instanceId === object.instanceId
-                      ? "object-picker-option active"
-                      : "object-picker-option"
-                  }
-                  disabled={isBusy}
-                  key={object.instanceId}
-                  onClick={() => void loadSceneObjectDetails(object.instanceId)}
-                  type="button"
-                >
-                  <span className="object-picker-name">{object.name}</span>
-                  <span>
-                    {object.scenePath ?? object.path} - id {object.instanceId} - {object.category}
-                  </span>
-                </button>
-              ))
-            ) : (
-              <p className="empty-log">
-                No matching objects. Refresh scene objects to load the active scene.
-              </p>
-            )}
-          </div>
-
-          {selectedSceneObject ? (
-            <>
-              <div className="object-summary">
-                <strong>{selectedSceneObject.name}</strong>
-                <span>{selectedSceneObject.scenePath ?? selectedSceneObject.path}</span>
-                {selectedSceneObject.sceneFilePath ? (
-                  <span>{selectedSceneObject.sceneFilePath}</span>
-                ) : null}
-                <span>
-                  id {selectedSceneObject.instanceId} - {selectedSceneObject.category}
-                  {selectedSceneObject.componentTypes.length
-                    ? ` - ${selectedSceneObject.componentTypes.join(", ")}`
-                    : ""}
-                </span>
-              </div>
-
-              <label>
-                Object name
-                <input
-                  value={editObjectValues.name}
-                  onChange={(event) =>
-                    setEditObjectValues((current) => ({
-                      ...current,
-                      name: event.target.value
-                    }))
-                  }
-                  placeholder="Object name"
-                />
-              </label>
-
-              <div className="coordinate-groups">
-                <fieldset>
-                  <legend>Position</legend>
-                  <div className="coordinate-row">
-                    {(["X", "Y", "Z"] as const).map((axis) => (
-                      <label key={axis}>
-                        {axis}
-                        <input
-                          value={editObjectValues[`position${axis}`]}
-                          onChange={(event) =>
-                            setEditObjectValues((current) => ({
-                              ...current,
-                              [`position${axis}`]: event.target.value
-                            }))
-                          }
-                          inputMode="decimal"
-                        />
-                      </label>
-                    ))}
-                  </div>
-                </fieldset>
-                <fieldset>
-                  <legend>Rotation</legend>
-                  <div className="coordinate-row">
-                    {(["X", "Y", "Z"] as const).map((axis) => (
-                      <label key={axis}>
-                        {axis}
-                        <input
-                          value={editObjectValues[`rotation${axis}`]}
-                          onChange={(event) =>
-                            setEditObjectValues((current) => ({
-                              ...current,
-                              [`rotation${axis}`]: event.target.value
-                            }))
-                          }
-                          inputMode="decimal"
-                        />
-                      </label>
-                    ))}
-                  </div>
-                </fieldset>
-                <fieldset>
-                  <legend>Scale</legend>
-                  <div className="coordinate-row">
-                    {(["X", "Y", "Z"] as const).map((axis) => (
-                      <label key={axis}>
-                        {axis}
-                        <input
-                          value={editObjectValues[`scale${axis}`]}
-                          onChange={(event) =>
-                            setEditObjectValues((current) => ({
-                              ...current,
-                              [`scale${axis}`]: event.target.value
-                            }))
-                          }
-                          inputMode="decimal"
-                        />
-                      </label>
-                    ))}
-                  </div>
-                </fieldset>
-              </div>
-
-              {selectedSceneObject.hasLight ? (
-                <fieldset className="light-edit-fields">
-                  <legend>Light</legend>
-                  <p className="field-note">
-                    Type: {selectedSceneObject.light?.lightType ?? "Unknown"}
-                  </p>
-                  <div className="property-row">
-                    <label>
-                      Intensity
-                      <input
-                        value={editObjectValues.lightIntensity}
-                        onChange={(event) =>
-                          setEditObjectValues((current) => ({
-                            ...current,
-                            lightIntensity: event.target.value
-                          }))
-                        }
-                        inputMode="decimal"
-                      />
-                    </label>
-                    <label>
-                      Range
-                      <input
-                        value={editObjectValues.lightRange}
-                        onChange={(event) =>
-                          setEditObjectValues((current) => ({
-                            ...current,
-                            lightRange: event.target.value
-                          }))
-                        }
-                        inputMode="decimal"
-                      />
-                    </label>
-                    {selectedSceneObject.light?.lightType === "spot" ? (
-                      <label>
-                        Spot angle
-                        <input
-                          value={editObjectValues.lightSpotAngle}
-                          onChange={(event) =>
-                            setEditObjectValues((current) => ({
-                              ...current,
-                              lightSpotAngle: event.target.value
-                            }))
-                          }
-                          inputMode="decimal"
-                        />
-                      </label>
-                    ) : null}
-                    <label>
-                      Color
-                      <input
-                        value={editObjectValues.lightColor}
-                        onChange={(event) =>
-                          setEditObjectValues((current) => ({
-                            ...current,
-                            lightColor: event.target.value
-                          }))
-                        }
-                        placeholder="#ffffff"
-                      />
-                    </label>
-                    <label>
-                      Preview
-                      <input
-                        aria-label="Selected light color picker"
-                        type="color"
-                        value={
-                          colorHexPattern.test(editObjectValues.lightColor)
-                            ? editObjectValues.lightColor.slice(0, 7)
-                            : "#ffffff"
-                        }
-                        onChange={(event) =>
-                          setEditObjectValues((current) => ({
-                            ...current,
-                            lightColor: event.target.value
-                          }))
-                        }
-                      />
-                    </label>
-                  </div>
-                </fieldset>
-              ) : null}
-            </>
-          ) : (
-            <p className="empty-log">
-              Select an object to edit its current name, transform, and supported fields.
-            </p>
-          )}
-        </div>
-        <button disabled={isBusy || !selectedSceneObject} type="submit">
-          Apply changes
-        </button>
-      </form>
-
-      <section className="panel log-panel">
-        <div className="panel-heading split-heading">
-          <h2>Output</h2>
-          <button
-            className="secondary-button"
-            disabled={logs.length === 0}
-            onClick={() => setLogs([])}
-            type="button"
-          >
-            Clear log
-          </button>
-        </div>
-        <div className="log-list">
-          {logs.length === 0 ? (
-            <p className="empty-log">No frontend log entries.</p>
-          ) : (
-            logs.map((log) => (
-              <article className={`log-entry ${log.tone}`} key={log.id}>
-                <strong>{log.title}</strong>
-                {log.details?.length ? (
-                  <ul>
-                    {log.details.map((detail) => (
-                      <li key={detail}>{detail}</li>
-                    ))}
-                  </ul>
-                ) : null}
-              </article>
-            ))
-          )}
-        </div>
-      </section>
-        </div>
-      </aside>
+      <ManualDrawer
+        isOpen={isDashboardOpen}
+        onClose={() => setIsDashboardOpen(false)}
+        isMcpMode={isMcpMode}
+        isBusy={isBusy}
+        sceneActionSubtitle={sceneActionSubtitle}
+        runAction={runAction}
+        createObjectValues={createObjectValues}
+        setCreateObjectValues={setCreateObjectValues}
+        submitCreateObject={submitCreateObject}
+        createTextureInputRef={createTextureInputRef}
+        clearCreateTextureFile={clearCreateTextureFile}
+        createLightValues={createLightValues}
+        setCreateLightValues={setCreateLightValues}
+        submitCreateLight={submitCreateLight}
+        importModelValues={importModelValues}
+        setImportModelValues={setImportModelValues}
+        submitImportModel={submitImportModel}
+        modelFileInputRef={modelFileInputRef}
+        modelTextureInputRef={modelTextureInputRef}
+        clearModelFile={clearModelFile}
+        clearModelTextureFile={clearModelTextureFile}
+        selectedSceneObject={selectedSceneObject}
+        sceneObjectSearch={sceneObjectSearch}
+        setSceneObjectSearch={setSceneObjectSearch}
+        filteredSceneObjects={filteredSceneObjects}
+        refreshSceneObjects={refreshSceneObjects}
+        loadSceneObjectDetails={loadSceneObjectDetails}
+        editObjectValues={editObjectValues}
+        setEditObjectValues={setEditObjectValues}
+        submitEditObject={submitEditObject}
+        logs={logs}
+        onClearLogs={() => setLogs([])}
+      />
     </main>
   );
 }

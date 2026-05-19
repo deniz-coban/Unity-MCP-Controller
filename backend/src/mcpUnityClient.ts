@@ -10,10 +10,16 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { isMcpConfigured, unityConfig } from "./config.js";
 import type {
+  ApplyTextureToObjectPayload,
+  BatchApplyTextureToObjectsPayload,
+  BatchSetMaterialColorPayload,
   ColorRGBA,
   CreateLightPayload,
   CreateObjectGridPayload,
   CreateObjectPayload,
+  DeleteObjectPayload,
+  DeleteObjectsPayload,
+  DuplicateObjectPayload,
   EditObjectPayload,
   EditTransformPayload,
   ImportModelPayload,
@@ -23,6 +29,7 @@ import type {
   SceneObjectDetails,
   SceneObjectLightDetails,
   SceneObjectSummary,
+  SetMaterialColorPayload,
   UploadedTextureFile,
   UnityDefaultObjectType,
   UnityLightType,
@@ -256,6 +263,8 @@ class McpUnityClient {
   private verifiedCreateObjectGridTools = false;
   private verifiedSceneObjectReadTools = false;
   private verifiedEditObjectTools = false;
+  private verifiedDeleteObjectTool = false;
+  private verifiedDuplicateObjectTool = false;
   private canRefreshAssets = false;
 
   async addCube(): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
@@ -1406,6 +1415,696 @@ class McpUnityClient {
     }
   }
 
+  async deleteObject(
+    payload: DeleteObjectPayload
+  ): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
+    if (!isMcpConfigured()) {
+      return configurationError([
+        "Set UNITY_MCP_SERVER_ARGS to the absolute path of mcp-unity/Server~/build/index.js.",
+        "UNITY_MCP_SERVER_COMMAND defaults to node."
+      ]);
+    }
+
+    if (payload.confirm !== true) {
+      return {
+        ok: false,
+        error: "Refusing to delete without confirm: true. The chat layer must request a preview first."
+      };
+    }
+
+    try {
+      const client = await this.connect();
+      await this.verifyDeleteObjectTool(client);
+
+      const result = await this.callTool(
+        client,
+        "delete_gameobject",
+        {
+          instanceId: payload.instanceId,
+          includeChildren: true
+        },
+        "Deleting Unity GameObject"
+      );
+
+      return {
+        ok: true,
+        mode: "mcp",
+        action: "deleteObject",
+        message: result.text || `Deleted instanceId ${payload.instanceId}.`,
+        data: {
+          tool: "delete_gameobject",
+          instanceId: payload.instanceId
+        }
+      };
+    } catch (error) {
+      await this.reset();
+      return {
+        ok: false,
+        error: "Unity/MCP delete failed.",
+        details: [
+          "The object may already have been removed or the MCP server may have disconnected.",
+          `Original error: ${getErrorMessage(error)}`
+        ]
+      };
+    }
+  }
+
+  async deleteObjects(
+    payload: DeleteObjectsPayload
+  ): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
+    if (!isMcpConfigured()) {
+      return configurationError([
+        "Set UNITY_MCP_SERVER_ARGS to the absolute path of mcp-unity/Server~/build/index.js.",
+        "UNITY_MCP_SERVER_COMMAND defaults to node."
+      ]);
+    }
+
+    if (payload.confirm !== true) {
+      return {
+        ok: false,
+        error: "Refusing to batch-delete without confirm: true. The chat layer must request a preview first."
+      };
+    }
+
+    try {
+      const client = await this.connect();
+      await this.verifyDeleteObjectTool(client);
+
+      const deleted: number[] = [];
+      const failed: { instanceId: number; error: string }[] = [];
+
+      for (const instanceId of payload.instanceIds) {
+        try {
+          await this.callTool(
+            client,
+            "delete_gameobject",
+            { instanceId, includeChildren: true },
+            `Deleting Unity GameObject ${instanceId}`
+          );
+          deleted.push(instanceId);
+        } catch (error) {
+          failed.push({ instanceId, error: getErrorMessage(error) });
+        }
+      }
+
+      if (deleted.length === 0 && failed.length > 0) {
+        return {
+          ok: false,
+          error: "Batch delete failed for every requested object.",
+          details: failed.slice(0, 20).map(
+            (entry) => `id ${entry.instanceId}: ${entry.error}`
+          )
+        };
+      }
+
+      const message =
+        failed.length === 0
+          ? `Deleted ${deleted.length} object${deleted.length === 1 ? "" : "s"}.`
+          : `Deleted ${deleted.length} of ${payload.instanceIds.length} object${
+              payload.instanceIds.length === 1 ? "" : "s"
+            }. ${failed.length} failed.`;
+
+      return {
+        ok: true,
+        mode: "mcp",
+        action: "deleteObjects",
+        message,
+        data: {
+          tool: "delete_gameobject",
+          requested: payload.instanceIds.length,
+          deleted,
+          failed: failed.slice(0, 20)
+        }
+      };
+    } catch (error) {
+      await this.reset();
+      return {
+        ok: false,
+        error: "Unity/MCP batch delete failed.",
+        details: [
+          "The MCP server may have disconnected.",
+          `Original error: ${getErrorMessage(error)}`
+        ]
+      };
+    }
+  }
+
+  async duplicateObject(
+    payload: DuplicateObjectPayload
+  ): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
+    if (!isMcpConfigured()) {
+      return configurationError([
+        "Set UNITY_MCP_SERVER_ARGS to the absolute path of mcp-unity/Server~/build/index.js.",
+        "UNITY_MCP_SERVER_COMMAND defaults to node."
+      ]);
+    }
+
+    try {
+      const client = await this.connect();
+      await this.verifyDuplicateObjectTool(client);
+
+      const offset = payload.positionOffset ?? {};
+      const offsetMagnitude =
+        (offset.x ?? 0) + (offset.y ?? 0) + (offset.z ?? 0);
+      const needsTransform = offsetMagnitude !== 0;
+
+      let beforeIds: Set<number> | undefined;
+      if (needsTransform) {
+        beforeIds = (await this.readHierarchySnapshot(client)).instanceIds;
+      }
+
+      const duplicateArgs: Record<string, unknown> = {
+        instanceId: payload.instanceId,
+        count: 1
+      };
+      if (payload.newName) {
+        duplicateArgs.newName = payload.newName;
+      }
+
+      const result = await this.callTool(
+        client,
+        "duplicate_gameobject",
+        duplicateArgs,
+        "Duplicating Unity GameObject"
+      );
+
+      let newInstanceId: number | undefined;
+      let appliedOffset = false;
+
+      if (needsTransform && beforeIds) {
+        const detectedId =
+          this.extractInstanceIdFromToolResult(result.raw, result.text) ??
+          (await this.findNewObjectInstanceId(client, beforeIds));
+
+        if (detectedId !== undefined) {
+          newInstanceId = detectedId;
+
+          // Read the source position separately so the offset is from the original.
+          const sourceSummary = await this.findSceneObjectSummary(
+            client,
+            payload.instanceId
+          );
+          let sourcePosition = { x: 0, y: 0, z: 0 };
+          if (sourceSummary) {
+            const sourceDetails = await this.readSceneObjectDetails(
+              client,
+              sourceSummary
+            );
+            sourcePosition = sourceDetails.position;
+          }
+
+          const newPosition = {
+            x: sourcePosition.x + (offset.x ?? 0),
+            y: sourcePosition.y + (offset.y ?? 0),
+            z: sourcePosition.z + (offset.z ?? 0)
+          };
+
+          try {
+            const duplicateSummary = await this.findSceneObjectSummary(
+              client,
+              detectedId
+            );
+            const duplicateDetails = duplicateSummary
+              ? await this.readSceneObjectDetails(client, duplicateSummary)
+              : undefined;
+
+            await this.callTool(
+              client,
+              "set_transform",
+              {
+                instanceId: detectedId,
+                position: newPosition,
+                rotation: duplicateDetails?.rotation ?? { x: 0, y: 0, z: 0 },
+                scale: duplicateDetails?.scale ?? { x: 1, y: 1, z: 1 },
+                space: "world"
+              },
+              "Offsetting duplicated object"
+            );
+            appliedOffset = true;
+          } catch {
+            // If offsetting fails, the duplicate still exists at the source position.
+            appliedOffset = false;
+          }
+        }
+      } else {
+        newInstanceId =
+          this.extractInstanceIdFromToolResult(result.raw, result.text) ??
+          undefined;
+      }
+
+      return {
+        ok: true,
+        mode: "mcp",
+        action: "duplicateObject",
+        message: result.text || "Duplicated Unity GameObject.",
+        data: {
+          tool: "duplicate_gameobject",
+          sourceInstanceId: payload.instanceId,
+          newInstanceId,
+          requestedName: payload.newName,
+          positionOffsetRequested: needsTransform ? offset : undefined,
+          positionOffsetApplied: appliedOffset
+        }
+      };
+    } catch (error) {
+      await this.reset();
+      return {
+        ok: false,
+        error: "Unity/MCP duplicate failed.",
+        details: [
+          "The MCP server may have disconnected or the source object may no longer exist.",
+          `Original error: ${getErrorMessage(error)}`
+        ]
+      };
+    }
+  }
+
+  async applyTextureToObject(
+    payload: ApplyTextureToObjectPayload
+  ): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
+    if (!isMcpConfigured()) {
+      return configurationError([
+        "Set UNITY_MCP_SERVER_ARGS to the absolute path of mcp-unity/Server~/build/index.js.",
+        "UNITY_MCP_SERVER_COMMAND defaults to node."
+      ]);
+    }
+
+    const projectPaths = await this.getUnityProjectPaths();
+    if (!projectPaths.ok) {
+      return projectPaths.error;
+    }
+
+    try {
+      const client = await this.connect();
+      await this.verifySceneObjectReadTools(client);
+      await this.verifyMaterialTools(client);
+
+      const summary = await this.findSceneObjectSummary(client, payload.instanceId);
+      if (!summary) {
+        return {
+          ok: false,
+          error: "Object no longer exists. Refresh scene objects."
+        };
+      }
+      const details = await this.readSceneObjectDetails(client, summary);
+
+      if (!details.hasRenderer) {
+        return {
+          ok: false,
+          error: "Cannot apply a texture to an object without a Renderer.",
+          details: [
+            `Object "${details.name}" (id ${details.instanceId}) has no Renderer component.`,
+            "Apply textures to primitives or model meshes only."
+          ]
+        };
+      }
+
+      const materialResult = await this.prepareTextureMaterial(
+        client,
+        payload.texture,
+        details.name,
+        projectPaths.paths
+      );
+      if (!materialResult.ok) {
+        return materialResult.error;
+      }
+
+      const assignment = await this.assignMaterialToRenderer(
+        client,
+        details.instanceId,
+        materialResult.material.materialPath
+      );
+      if (!assignment.ok) {
+        return assignment.error;
+      }
+
+      return {
+        ok: true,
+        mode: "mcp",
+        action: "applyTextureToObject",
+        message: `Applied texture ${payload.texture.originalName} to "${details.name}".`,
+        data: {
+          instanceId: details.instanceId,
+          object: { name: details.name },
+          material: {
+            name: materialResult.material.materialName,
+            path: materialResult.material.materialPath,
+            texturePath: materialResult.material.texturePath,
+            textureProperty: materialResult.material.textureProperty
+          }
+        }
+      };
+    } catch (error) {
+      await this.reset();
+      return {
+        ok: false,
+        error: "Unity/MCP apply-texture failed.",
+        details: [
+          "The MCP server may have disconnected or the texture could not be imported.",
+          `Original error: ${getErrorMessage(error)}`
+        ]
+      };
+    }
+  }
+
+  async batchApplyTextureToObjects(
+    payload: BatchApplyTextureToObjectsPayload
+  ): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
+    if (!isMcpConfigured()) {
+      return configurationError([
+        "Set UNITY_MCP_SERVER_ARGS to the absolute path of mcp-unity/Server~/build/index.js.",
+        "UNITY_MCP_SERVER_COMMAND defaults to node."
+      ]);
+    }
+
+    const projectPaths = await this.getUnityProjectPaths();
+    if (!projectPaths.ok) {
+      return projectPaths.error;
+    }
+
+    try {
+      const client = await this.connect();
+      await this.verifySceneObjectReadTools(client);
+      await this.verifyMaterialTools(client);
+
+      // ONE material asset, MANY assignments — orders of magnitude faster than
+      // calling apply_texture_to_object per id.
+      const materialBaseName =
+        payload.texture.originalName.replace(/\.[^/.]+$/, "") || "Texture";
+      const materialResult = await this.prepareTextureMaterial(
+        client,
+        payload.texture,
+        materialBaseName,
+        projectPaths.paths
+      );
+      if (!materialResult.ok) {
+        return materialResult.error;
+      }
+      const materialPath = materialResult.material.materialPath;
+
+      const applied: number[] = [];
+      const failed: { instanceId: number; error: string }[] = [];
+
+      for (const instanceId of payload.instanceIds) {
+        try {
+          const summary = await this.findSceneObjectSummary(client, instanceId);
+          if (!summary) {
+            failed.push({ instanceId, error: "Object no longer exists." });
+            continue;
+          }
+          const details = await this.readSceneObjectDetails(client, summary);
+          if (!details.hasRenderer) {
+            failed.push({
+              instanceId,
+              error: "Object has no Renderer component."
+            });
+            continue;
+          }
+          const assignment = await this.assignMaterialToRenderer(
+            client,
+            instanceId,
+            materialPath
+          );
+          if (!assignment.ok) {
+            failed.push({
+              instanceId,
+              error: assignment.error.details?.[0] ?? assignment.error.error
+            });
+            continue;
+          }
+          applied.push(instanceId);
+        } catch (error) {
+          failed.push({ instanceId, error: getErrorMessage(error) });
+        }
+      }
+
+      if (applied.length === 0 && failed.length > 0) {
+        return {
+          ok: false,
+          error: "Batch texture failed for every requested object.",
+          details: failed
+            .slice(0, 20)
+            .map((entry) => `id ${entry.instanceId}: ${entry.error}`)
+        };
+      }
+
+      const message =
+        failed.length === 0
+          ? `Applied texture ${payload.texture.originalName} to ${applied.length} object${applied.length === 1 ? "" : "s"}.`
+          : `Applied texture to ${applied.length} of ${payload.instanceIds.length} object${
+              payload.instanceIds.length === 1 ? "" : "s"
+            }. ${failed.length} failed.`;
+
+      return {
+        ok: true,
+        mode: "mcp",
+        action: "batchApplyTextureToObjects",
+        message,
+        data: {
+          tool: "assign_material",
+          material: {
+            name: materialResult.material.materialName,
+            path: materialPath,
+            texturePath: materialResult.material.texturePath
+          },
+          requested: payload.instanceIds.length,
+          applied,
+          failed: failed.slice(0, 20)
+        }
+      };
+    } catch (error) {
+      await this.reset();
+      return {
+        ok: false,
+        error: "Unity/MCP batch apply-texture failed.",
+        details: [
+          "The MCP server may have disconnected or the texture could not be imported.",
+          `Original error: ${getErrorMessage(error)}`
+        ]
+      };
+    }
+  }
+
+  async batchSetMaterialColor(
+    payload: BatchSetMaterialColorPayload
+  ): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
+    if (!isMcpConfigured()) {
+      return configurationError([
+        "Set UNITY_MCP_SERVER_ARGS to the absolute path of mcp-unity/Server~/build/index.js.",
+        "UNITY_MCP_SERVER_COMMAND defaults to node."
+      ]);
+    }
+
+    const projectPaths = await this.getUnityProjectPaths();
+    if (!projectPaths.ok) {
+      return projectPaths.error;
+    }
+
+    try {
+      const client = await this.connect();
+      await this.verifySceneObjectReadTools(client);
+      await this.verifyMaterialTools(client);
+
+      // ONE color material asset, MANY assignments.
+      await fs.mkdir(projectPaths.paths.generatedMaterialsDir, {
+        recursive: true
+      });
+      const sanitizedHex = payload.colorHex.replace("#", "");
+      const materialAsset = await this.nextGeneratedMaterialAsset(
+        projectPaths.paths.generatedMaterialsDir,
+        `Color_${sanitizedHex}`
+      );
+
+      await this.callTool(
+        client,
+        "create_material",
+        {
+          name: materialAsset.name,
+          savePath: materialAsset.path,
+          color: payload.color
+        },
+        "Creating Unity color material"
+      );
+
+      const applied: number[] = [];
+      const failed: { instanceId: number; error: string }[] = [];
+
+      for (const instanceId of payload.instanceIds) {
+        try {
+          const summary = await this.findSceneObjectSummary(client, instanceId);
+          if (!summary) {
+            failed.push({ instanceId, error: "Object no longer exists." });
+            continue;
+          }
+          const details = await this.readSceneObjectDetails(client, summary);
+          if (!details.hasRenderer) {
+            failed.push({
+              instanceId,
+              error: "Object has no Renderer component."
+            });
+            continue;
+          }
+          const assignment = await this.assignMaterialToRenderer(
+            client,
+            instanceId,
+            materialAsset.path
+          );
+          if (!assignment.ok) {
+            failed.push({
+              instanceId,
+              error: assignment.error.details?.[0] ?? assignment.error.error
+            });
+            continue;
+          }
+          applied.push(instanceId);
+        } catch (error) {
+          failed.push({ instanceId, error: getErrorMessage(error) });
+        }
+      }
+
+      if (applied.length === 0 && failed.length > 0) {
+        return {
+          ok: false,
+          error: "Batch color failed for every requested object.",
+          details: failed
+            .slice(0, 20)
+            .map((entry) => `id ${entry.instanceId}: ${entry.error}`)
+        };
+      }
+
+      const message =
+        failed.length === 0
+          ? `Set color ${payload.colorHex} on ${applied.length} object${applied.length === 1 ? "" : "s"}.`
+          : `Set color on ${applied.length} of ${payload.instanceIds.length} object${
+              payload.instanceIds.length === 1 ? "" : "s"
+            }. ${failed.length} failed.`;
+
+      return {
+        ok: true,
+        mode: "mcp",
+        action: "batchSetMaterialColor",
+        message,
+        data: {
+          tool: "assign_material",
+          material: {
+            name: materialAsset.name,
+            path: materialAsset.path,
+            color: payload.color,
+            colorHex: payload.colorHex
+          },
+          requested: payload.instanceIds.length,
+          applied,
+          failed: failed.slice(0, 20)
+        }
+      };
+    } catch (error) {
+      await this.reset();
+      return {
+        ok: false,
+        error: "Unity/MCP batch set-color failed.",
+        details: [
+          "The MCP server may have disconnected or material creation failed.",
+          `Original error: ${getErrorMessage(error)}`
+        ]
+      };
+    }
+  }
+
+  async setMaterialColor(
+    payload: SetMaterialColorPayload
+  ): Promise<UnityActionSuccessResponse | UnityActionErrorResponse> {
+    if (!isMcpConfigured()) {
+      return configurationError([
+        "Set UNITY_MCP_SERVER_ARGS to the absolute path of mcp-unity/Server~/build/index.js.",
+        "UNITY_MCP_SERVER_COMMAND defaults to node."
+      ]);
+    }
+
+    const projectPaths = await this.getUnityProjectPaths();
+    if (!projectPaths.ok) {
+      return projectPaths.error;
+    }
+
+    try {
+      const client = await this.connect();
+      await this.verifySceneObjectReadTools(client);
+      await this.verifyMaterialTools(client);
+
+      const summary = await this.findSceneObjectSummary(client, payload.instanceId);
+      if (!summary) {
+        return {
+          ok: false,
+          error: "Object no longer exists. Refresh scene objects."
+        };
+      }
+      const details = await this.readSceneObjectDetails(client, summary);
+
+      if (!details.hasRenderer) {
+        return {
+          ok: false,
+          error: "Cannot set material color on an object without a Renderer.",
+          details: [
+            `Object "${details.name}" (id ${details.instanceId}) has no Renderer component.`,
+            "For light color, use edit_light instead."
+          ]
+        };
+      }
+
+      await fs.mkdir(projectPaths.paths.generatedMaterialsDir, { recursive: true });
+      const materialAsset = await this.nextGeneratedMaterialAsset(
+        projectPaths.paths.generatedMaterialsDir,
+        details.name
+      );
+
+      await this.callTool(
+        client,
+        "create_material",
+        {
+          name: materialAsset.name,
+          savePath: materialAsset.path,
+          color: payload.color
+        },
+        "Creating Unity color material"
+      );
+
+      const assignment = await this.assignMaterialToRenderer(
+        client,
+        details.instanceId,
+        materialAsset.path
+      );
+      if (!assignment.ok) {
+        return assignment.error;
+      }
+
+      return {
+        ok: true,
+        mode: "mcp",
+        action: "setMaterialColor",
+        message: `Set color ${payload.colorHex} on "${details.name}".`,
+        data: {
+          instanceId: details.instanceId,
+          object: { name: details.name },
+          material: {
+            name: materialAsset.name,
+            path: materialAsset.path,
+            color: payload.color,
+            colorHex: payload.colorHex
+          }
+        }
+      };
+    } catch (error) {
+      await this.reset();
+      return {
+        ok: false,
+        error: "Unity/MCP set-color failed.",
+        details: [
+          "The MCP server may have disconnected or material creation failed.",
+          `Original error: ${getErrorMessage(error)}`
+        ]
+      };
+    }
+  }
+
   private async connect(): Promise<Client> {
     if (this.client) {
       return this.client;
@@ -1735,6 +2434,47 @@ class McpUnityClient {
 
     this.assertToolExists(toolsResult.tools, "save_scene");
     this.verifiedSaveSceneTool = true;
+  }
+
+  private async verifyDeleteObjectTool(client: Client): Promise<void> {
+    if (this.verifiedDeleteObjectTool) {
+      return;
+    }
+
+    const toolsResult = await withTimeout(
+      client.request({ method: "tools/list" }, ListToolsResultSchema),
+      "Listing Unity MCP tools"
+    );
+
+    this.assertToolExists(toolsResult.tools, "delete_gameobject");
+    this.verifiedDeleteObjectTool = true;
+  }
+
+  private async verifyDuplicateObjectTool(client: Client): Promise<void> {
+    if (this.verifiedDuplicateObjectTool) {
+      return;
+    }
+
+    const [toolsResult, resourcesResult] = await Promise.all([
+      withTimeout(
+        client.request({ method: "tools/list" }, ListToolsResultSchema),
+        "Listing Unity MCP tools"
+      ),
+      withTimeout(
+        client.request({ method: "resources/list" }, ListResourcesResultSchema),
+        "Listing Unity MCP resources"
+      )
+    ]);
+
+    this.assertToolExists(toolsResult.tools, "duplicate_gameobject");
+    this.assertToolExists(toolsResult.tools, "get_gameobject");
+    this.assertToolObjectArgument(toolsResult.tools, "set_transform", "position");
+
+    if (!resourcesResult.resources.some((resource) => resource.uri === hierarchyResourceUri)) {
+      throw new Error(`MCP resource "${hierarchyResourceUri}" was not found.`);
+    }
+
+    this.verifiedDuplicateObjectTool = true;
   }
 
   private assertToolExists(
@@ -3222,6 +3962,8 @@ class McpUnityClient {
     this.verifiedCreateObjectGridTools = false;
     this.verifiedSceneObjectReadTools = false;
     this.verifiedEditObjectTools = false;
+    this.verifiedDeleteObjectTool = false;
+    this.verifiedDuplicateObjectTool = false;
     this.canRefreshAssets = false;
     this.connectPromise = undefined;
 

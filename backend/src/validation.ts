@@ -1,12 +1,21 @@
 import type {
+  ApplyTextureToObjectPayload,
+  BatchApplyTextureToObjectsPayload,
+  BatchSetMaterialColorPayload,
   ColorRGBA,
   CreateLightPayload,
   CreateObjectPayload,
+  DeleteObjectPayload,
+  DeleteObjectsPayload,
+  DuplicateObjectPayload,
+  FindOnlineModelPayload,
+  OnlineModelSource,
   EditObjectPayload,
   EditTransformPayload,
   ImportModelPayload,
   ModelFileExtension,
   ObjectTransformPayload,
+  SetMaterialColorPayload,
   TextureFileExtension,
   UploadedTextureFile,
   UnityDefaultObjectType,
@@ -33,7 +42,9 @@ export const unityLightTypes = [
 
 export const supportedModelExtensions = [
   ".fbx",
-  ".obj"
+  ".obj",
+  ".glb",
+  ".gltf"
 ] as const satisfies readonly ModelFileExtension[];
 
 export const supportedTextureExtensions = [
@@ -794,6 +805,415 @@ export const validateEditObjectPayload = (
       rotation,
       scale,
       ...(light ? { light } : {})
+    }
+  };
+};
+
+export const validateDeleteObjectPayload = (
+  body: unknown
+): { ok: true; payload: DeleteObjectPayload } | { ok: false; details: string[] } => {
+  const details: string[] = [];
+
+  if (!isRecord(body)) {
+    return { ok: false, details: ["Request body must be a JSON object."] };
+  }
+
+  const instanceId = parseFiniteNumber(body.instanceId);
+  if (instanceId === undefined || !Number.isInteger(instanceId)) {
+    details.push("instanceId must be an integer.");
+  }
+
+  let confirm: boolean | undefined;
+  if (body.confirm !== undefined) {
+    if (typeof body.confirm !== "boolean") {
+      details.push("confirm must be a boolean when provided.");
+    } else {
+      confirm = body.confirm;
+    }
+  }
+
+  if (details.length > 0 || instanceId === undefined || !Number.isInteger(instanceId)) {
+    return { ok: false, details };
+  }
+
+  return {
+    ok: true,
+    payload: { instanceId, ...(confirm !== undefined ? { confirm } : {}) }
+  };
+};
+
+export const validateDeleteObjectsPayload = (
+  body: unknown
+): { ok: true; payload: DeleteObjectsPayload } | { ok: false; details: string[] } => {
+  const details: string[] = [];
+
+  if (!isRecord(body)) {
+    return { ok: false, details: ["Request body must be a JSON object."] };
+  }
+
+  const raw = body.instanceIds;
+  if (!Array.isArray(raw) || raw.length === 0) {
+    details.push("instanceIds must be a non-empty array of integers.");
+  }
+
+  const instanceIds: number[] = [];
+  if (Array.isArray(raw)) {
+    for (let i = 0; i < raw.length; i += 1) {
+      const parsed = parseFiniteNumber(raw[i]);
+      if (parsed === undefined || !Number.isInteger(parsed)) {
+        details.push(`instanceIds[${i}] must be an integer.`);
+        continue;
+      }
+      instanceIds.push(parsed);
+    }
+  }
+
+  const deduped = Array.from(new Set(instanceIds));
+
+  let confirm: boolean | undefined;
+  if (body.confirm !== undefined) {
+    if (typeof body.confirm !== "boolean") {
+      details.push("confirm must be a boolean when provided.");
+    } else {
+      confirm = body.confirm;
+    }
+  }
+
+  if (details.length > 0 || deduped.length === 0) {
+    return { ok: false, details };
+  }
+
+  return {
+    ok: true,
+    payload: { instanceIds: deduped, ...(confirm !== undefined ? { confirm } : {}) }
+  };
+};
+
+export const validateDuplicateObjectPayload = (
+  body: unknown
+): { ok: true; payload: DuplicateObjectPayload } | { ok: false; details: string[] } => {
+  const details: string[] = [];
+
+  if (!isRecord(body)) {
+    return { ok: false, details: ["Request body must be a JSON object."] };
+  }
+
+  const instanceId = parseFiniteNumber(body.instanceId);
+  if (instanceId === undefined || !Number.isInteger(instanceId)) {
+    details.push("instanceId must be an integer.");
+  }
+
+  let newName: string | undefined;
+  if (body.newName !== undefined) {
+    if (typeof body.newName !== "string" || body.newName.trim().length === 0) {
+      details.push("newName must be a non-empty string when provided.");
+    } else {
+      newName = body.newName.trim();
+    }
+  }
+
+  let positionOffset: Partial<Vector3> | undefined;
+  if (body.positionOffset !== undefined) {
+    if (!isRecord(body.positionOffset)) {
+      details.push("positionOffset must be an object with optional numeric x/y/z.");
+    } else {
+      const offset: Partial<Vector3> = {};
+      for (const axis of ["x", "y", "z"] as const) {
+        if (body.positionOffset[axis] !== undefined) {
+          const value = parseFiniteNumber(body.positionOffset[axis]);
+          if (value === undefined) {
+            details.push(`positionOffset.${axis} must be a finite number.`);
+          } else {
+            offset[axis] = value;
+          }
+        }
+      }
+      if (Object.keys(offset).length > 0) {
+        positionOffset = offset;
+      }
+    }
+  }
+
+  if (details.length > 0 || instanceId === undefined || !Number.isInteger(instanceId)) {
+    return { ok: false, details };
+  }
+
+  return {
+    ok: true,
+    payload: {
+      instanceId,
+      ...(newName !== undefined ? { newName } : {}),
+      ...(positionOffset ? { positionOffset } : {})
+    }
+  };
+};
+
+export const validateApplyTextureToObjectMultipartPayload = (
+  body: unknown,
+  textureFile: UploadedFileInput | undefined
+): { ok: true; payload: ApplyTextureToObjectPayload } | { ok: false; details: string[] } => {
+  const details: string[] = [];
+
+  if (!isRecord(body)) {
+    return { ok: false, details: ["Request body must include object metadata."] };
+  }
+
+  const instanceId = parseFiniteNumber(body.instanceId);
+  if (instanceId === undefined || !Number.isInteger(instanceId)) {
+    details.push("instanceId must be an integer.");
+  }
+
+  const texture = validateOptionalTextureFile(textureFile, details);
+  if (!textureFile) {
+    details.push("texture file is required.");
+  }
+
+  if (
+    details.length > 0 ||
+    instanceId === undefined ||
+    !Number.isInteger(instanceId) ||
+    !texture
+  ) {
+    return { ok: false, details };
+  }
+
+  return { ok: true, payload: { instanceId, texture } };
+};
+
+const parseInstanceIdArray = (
+  raw: unknown,
+  fieldName: string,
+  details: string[]
+): number[] => {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    details.push(`${fieldName} must be a non-empty array of integers.`);
+    return [];
+  }
+  const ids: number[] = [];
+  for (let i = 0; i < raw.length; i += 1) {
+    const parsed = parseFiniteNumber(raw[i]);
+    if (parsed === undefined || !Number.isInteger(parsed)) {
+      details.push(`${fieldName}[${i}] must be an integer.`);
+      continue;
+    }
+    ids.push(parsed);
+  }
+  return Array.from(new Set(ids));
+};
+
+export const validateBatchApplyTextureToObjectsMultipartPayload = (
+  body: unknown,
+  textureFile: UploadedFileInput | undefined
+):
+  | { ok: true; payload: BatchApplyTextureToObjectsPayload }
+  | { ok: false; details: string[] } => {
+  const details: string[] = [];
+
+  if (!isRecord(body)) {
+    return { ok: false, details: ["Request body must include batch metadata."] };
+  }
+
+  let rawIds: unknown = body.instanceIds;
+  if (typeof rawIds === "string") {
+    try {
+      rawIds = JSON.parse(rawIds);
+    } catch {
+      details.push("instanceIds must be JSON array of integers.");
+    }
+  }
+
+  const instanceIds = parseInstanceIdArray(rawIds, "instanceIds", details);
+  const texture = validateOptionalTextureFile(textureFile, details);
+  if (!textureFile) {
+    details.push("texture file is required.");
+  }
+
+  if (details.length > 0 || instanceIds.length === 0 || !texture) {
+    return { ok: false, details };
+  }
+
+  return { ok: true, payload: { instanceIds, texture } };
+};
+
+export const validateBatchSetMaterialColorPayload = (
+  body: unknown
+):
+  | { ok: true; payload: BatchSetMaterialColorPayload }
+  | { ok: false; details: string[] } => {
+  const details: string[] = [];
+
+  if (!isRecord(body)) {
+    return { ok: false, details: ["Request body must be a JSON object."] };
+  }
+
+  const instanceIds = parseInstanceIdArray(body.instanceIds, "instanceIds", details);
+  const color = parseHexColor(body.color);
+  if (!color) {
+    details.push("color must be #RRGGBB or #RRGGBBAA.");
+  }
+
+  if (details.length > 0 || instanceIds.length === 0 || !color) {
+    return { ok: false, details };
+  }
+
+  return {
+    ok: true,
+    payload: {
+      instanceIds,
+      color,
+      colorHex: (body.color as string).trim()
+    }
+  };
+};
+
+export const validateSetMaterialColorPayload = (
+  body: unknown
+): { ok: true; payload: SetMaterialColorPayload } | { ok: false; details: string[] } => {
+  const details: string[] = [];
+
+  if (!isRecord(body)) {
+    return { ok: false, details: ["Request body must be a JSON object."] };
+  }
+
+  const instanceId = parseFiniteNumber(body.instanceId);
+  if (instanceId === undefined || !Number.isInteger(instanceId)) {
+    details.push("instanceId must be an integer.");
+  }
+
+  const color = parseHexColor(body.color);
+  if (!color) {
+    details.push("color must be #RRGGBB or #RRGGBBAA.");
+  }
+
+  if (
+    details.length > 0 ||
+    instanceId === undefined ||
+    !Number.isInteger(instanceId) ||
+    !color
+  ) {
+    return { ok: false, details };
+  }
+
+  return {
+    ok: true,
+    payload: {
+      instanceId,
+      color,
+      colorHex: (body.color as string).trim()
+    }
+  };
+};
+
+const onlineModelSources: readonly OnlineModelSource[] = [
+  "poly_pizza",
+  "sketchfab"
+];
+
+export const validateFindOnlineModelPayload = (
+  body: unknown
+):
+  | { ok: true; payload: FindOnlineModelPayload }
+  | { ok: false; details: string[] } => {
+  const details: string[] = [];
+
+  if (!isRecord(body)) {
+    return { ok: false, details: ["Request body must be a JSON object."] };
+  }
+
+  const query = typeof body.query === "string" ? body.query.trim() : "";
+  if (!query) {
+    details.push("query must be a non-empty string.");
+  }
+
+  let sources: OnlineModelSource[] = ["poly_pizza", "sketchfab"];
+  if (body.sources !== undefined) {
+    if (body.sources === "both") {
+      sources = ["poly_pizza", "sketchfab"];
+    } else if (typeof body.sources === "string") {
+      if (onlineModelSources.includes(body.sources as OnlineModelSource)) {
+        sources = [body.sources as OnlineModelSource];
+      } else {
+        details.push(
+          `sources must be one of "poly_pizza", "sketchfab", "both", or an array of those names.`
+        );
+      }
+    } else if (Array.isArray(body.sources)) {
+      const cleaned: OnlineModelSource[] = [];
+      for (const item of body.sources) {
+        if (typeof item === "string" && onlineModelSources.includes(item as OnlineModelSource)) {
+          cleaned.push(item as OnlineModelSource);
+        } else {
+          details.push(
+            `sources[] entries must be "poly_pizza" or "sketchfab".`
+          );
+        }
+      }
+      if (cleaned.length > 0) {
+        sources = Array.from(new Set(cleaned));
+      }
+    } else {
+      details.push("sources must be a string or array.");
+    }
+  }
+
+  let name: string | undefined;
+  if (body.name !== undefined) {
+    if (typeof body.name !== "string" || body.name.trim().length === 0) {
+      details.push("name must be a non-empty string when provided.");
+    } else {
+      name = body.name.trim();
+    }
+  }
+
+  const parseOptionalVector = (
+    raw: unknown,
+    fieldName: string
+  ): Vector3 | undefined => {
+    if (raw === undefined) return undefined;
+    if (!isRecord(raw)) {
+      details.push(`${fieldName} must include numeric x, y, and z.`);
+      return undefined;
+    }
+    const v: Partial<Vector3> = {};
+    for (const axis of ["x", "y", "z"] as const) {
+      const value = parseFiniteNumber(raw[axis]);
+      if (value === undefined) {
+        details.push(`${fieldName}.${axis} must be a finite number.`);
+      } else {
+        v[axis] = value;
+      }
+    }
+    if (
+      typeof v.x !== "number" ||
+      typeof v.y !== "number" ||
+      typeof v.z !== "number"
+    ) {
+      return undefined;
+    }
+    return { x: v.x, y: v.y, z: v.z };
+  };
+
+  const position = parseOptionalVector(body.position, "position");
+  const rotation = parseOptionalVector(body.rotation, "rotation");
+  const scale = parseOptionalVector(body.scale, "scale");
+
+  if (scale && (scale.x <= 0 || scale.y <= 0 || scale.z <= 0)) {
+    details.push("scale axes must be greater than 0.");
+  }
+
+  if (details.length > 0 || !query) {
+    return { ok: false, details };
+  }
+
+  return {
+    ok: true,
+    payload: {
+      query,
+      sources,
+      ...(name !== undefined ? { name } : {}),
+      ...(position ? { position } : {}),
+      ...(rotation ? { rotation } : {}),
+      ...(scale ? { scale } : {})
     }
   };
 };

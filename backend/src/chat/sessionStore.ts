@@ -5,13 +5,15 @@ import type {
   ChatAttachment,
   ChatAttachmentSummary,
   ChatMessage,
-  ChatSession
+  ChatSession,
+  PendingConfirmation
 } from "./types.js";
 
 const sessions = new Map<string, ChatSession>();
 
 const attachmentTtlMs = unityConfig.chat.attachmentTtlMinutes * 60 * 1000;
 const sessionTtlMs = Math.max(attachmentTtlMs, 6 * 60 * 60 * 1000);
+const pendingConfirmationTtlMs = 5 * 60 * 1000;
 
 const now = (): number => Date.now();
 
@@ -48,12 +50,75 @@ export const getOrCreateChatSession = (sessionId?: string): ChatSession => {
     messages: [],
     toolSummaries: [],
     attachments: [],
+    pendingConfirmations: new Map(),
     createdAt: now(),
     updatedAt: now()
   };
 
   sessions.set(id, session);
   return session;
+};
+
+export const recordPendingConfirmation = (
+  session: ChatSession,
+  entry: Omit<PendingConfirmation, "key" | "expiresAt"> & { key: string }
+): PendingConfirmation => {
+  const confirmation: PendingConfirmation = {
+    ...entry,
+    expiresAt: now() + pendingConfirmationTtlMs
+  };
+  session.pendingConfirmations.set(confirmation.key, confirmation);
+  session.updatedAt = now();
+  return confirmation;
+};
+
+export const peekPendingConfirmation = (
+  session: ChatSession,
+  key: string
+): PendingConfirmation | undefined => {
+  const entry = session.pendingConfirmations.get(key);
+  if (!entry) {
+    return undefined;
+  }
+  if (entry.expiresAt < now()) {
+    session.pendingConfirmations.delete(key);
+    return undefined;
+  }
+  return entry;
+};
+
+export const consumePendingConfirmation = (
+  session: ChatSession,
+  key: string
+):
+  | { ok: true; confirmation: PendingConfirmation }
+  | { ok: false; reason: "missing" | "expired" } => {
+  const entry = session.pendingConfirmations.get(key);
+  if (!entry) {
+    return { ok: false, reason: "missing" };
+  }
+  if (entry.expiresAt < now()) {
+    session.pendingConfirmations.delete(key);
+    return { ok: false, reason: "expired" };
+  }
+  session.pendingConfirmations.delete(key);
+  session.updatedAt = now();
+  return { ok: true, confirmation: entry };
+};
+
+export const listPendingConfirmations = (
+  session: ChatSession
+): PendingConfirmation[] => {
+  const currentTime = now();
+  const live: PendingConfirmation[] = [];
+  for (const [key, entry] of session.pendingConfirmations) {
+    if (entry.expiresAt < currentTime) {
+      session.pendingConfirmations.delete(key);
+    } else {
+      live.push(entry);
+    }
+  }
+  return live;
 };
 
 export const addChatMessage = (
@@ -128,9 +193,16 @@ export const cleanupExpiredChatSessions = () => {
 
     session.attachments = activeAttachments;
 
+    for (const [key, entry] of session.pendingConfirmations) {
+      if (entry.expiresAt < currentTime) {
+        session.pendingConfirmations.delete(key);
+      }
+    }
+
     if (
       currentTime - session.updatedAt > sessionTtlMs &&
-      session.attachments.length === 0
+      session.attachments.length === 0 &&
+      session.pendingConfirmations.size === 0
     ) {
       sessions.delete(sessionId);
     }
