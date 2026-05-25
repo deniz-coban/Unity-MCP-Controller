@@ -1,6 +1,6 @@
 # Unity MCP Controller
 
-A local React + Express app for building and editing Unity scenes through safe,
+A local React + Express app for building and editing Unity scenes through 
 high-level tools. The frontend gives you an AI scene-building chat interface,
 attachment upload, confirmation cards for destructive actions and online model
 picks, and a tool-call/activity log. The backend can run in an in-memory mock
